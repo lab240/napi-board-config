@@ -60,15 +60,50 @@ class BootTests(unittest.TestCase):
         self.assertIn('#overlays=rk3308-uart1', plan['after'])
         self.assertIn('overlays=rk3308-i2c1-ds1338 rk3308-usb20-host rk3308-spi2-w5500', plan['after'])
 
-    def test_missing_overlay_blocks_plan_and_apply(self):
-        self.env('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\n')
-        with self.assertRaisesRegex(ValueError, 'rk3308-i2c1.dtbo'):
-            self.service.boot_plan(BoardConfig())
-        self.files('rk3308-i2c1')
+    def test_missing_overlay_warns_and_can_be_written_after_confirmation(self):
+        path = self.env('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\nuser_overlays=custom-any-name  another-name  \n')
+        original = path.read_text()
         plan = self.service.boot_plan(BoardConfig())
-        (self.stock / 'rk3308-i2c1.dtbo').unlink()
-        with self.assertRaisesRegex(ValueError, 'not found'):
-            self.service.apply_boot_plan(plan, confirmed=True)
+        self.assertIn('rk3308-i2c1.dtbo', plan['warnings'][0])
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=i2c1')
+        self.assertEqual(path.read_text(), original)
+        with self.assertRaises(ValueError):
+            self.service.apply_boot_plan(plan)
+        backup = self.service.apply_boot_plan(plan, confirmed=True)
+        self.assertEqual(Path(backup).read_text(), original)
+        self.assertIn('user_overlays=custom-any-name  another-name  \n', path.read_text())
+        self.assertIn('overlays=i2c1\n', path.read_text())
+
+    def test_tui_view_only_and_confirmation_cancellation(self):
+        self.env('overlay_prefix=rk3308\n')
+        ui = UI.__new__(UI)
+        ui.service = self.service
+        ui.cfg = BoardConfig()
+        ui.preview_boot = Mock(return_value=False)
+        ui.confirm_yes = Mock(return_value=False)
+        self.service.apply_boot_plan = Mock()
+        ui.write_env()
+        ui.preview_boot.assert_called_once()
+        ui.confirm_yes.assert_not_called()
+        self.service.apply_boot_plan.assert_not_called()
+        ui.preview_boot.return_value = True
+        ui.write_env()
+        ui.confirm_yes.assert_called_once()
+        self.service.apply_boot_plan.assert_not_called()
+
+    def test_startup_loads_valid_eeprom_and_falls_back_on_bad_crc(self):
+        cfg = BoardConfig(board_name='From EEPROM', serial_number=12, mfg_date='2026-09-16')
+        self.service.write_eeprom(cfg, confirmed=True)
+        ui = UI(Mock(), self.service)
+        self.assertEqual(ui.cfg, cfg)
+        self.assertIn('EEPROM configuration loaded', ui.status)
+        self.eeprom.write_bytes(b'\xff' * 256)
+        ui = UI(Mock(), self.service)
+        self.assertEqual(ui.cfg, self.service.defaults())
+        self.assertIn('CRC mismatch', ui.status)
+        self.eeprom.unlink()
+        ui = UI(Mock(), self.service)
+        self.assertIn('EEPROM device not found', ui.status)
 
     def test_both_env_files_and_deployed_script(self):
         self.env('overlay_prefix=rk3308\n')
@@ -87,8 +122,8 @@ class BootTests(unittest.TestCase):
         self.files('rk3308-usb20-host')
         (self.root / 'boot.scr').write_text('for overlay_file in ${overlays}; do\nload mmc 0:1 ${addr} ${prefix}actual-overlays/${overlay_prefix}-${overlay_file}.dtbo;\ndone\n')
         self.assertEqual(self.service.overlays(BoardConfig())['overlays'], ['i2c1'])
-        with self.assertRaisesRegex(ValueError, 'not found'):
-            self.service.overlays(BoardConfig(enabled={'i2c1', 'usb_host'}))
+        info = self.service.overlays(BoardConfig(enabled={'i2c1', 'usb_host'}))
+        self.assertIn('rk3308-usb20-host.dtbo', info['warnings'][0])
 
     def test_eeprom_in_base_dtb_does_not_require_overlay_file(self):
         self.env('overlay_prefix=rk3308\n')

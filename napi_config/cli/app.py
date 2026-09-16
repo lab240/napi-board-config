@@ -68,7 +68,8 @@ def execute(args, service):
         plan = service.boot_plan(cfg)
         if args.action == 'write':
             backup = service.apply_boot_plan(plan, confirmed=args.yes)
-            return {'path': plan['target'], 'changed': plan['changed'], 'backup': backup, 'reboot': False}
+            return {'path': plan['target'], 'changed': plan['changed'], 'backup': backup,
+                    'warnings': plan['warnings'], 'reboot': False}
         return plan
     return service.document(cfg)
 

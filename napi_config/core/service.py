@@ -127,7 +127,22 @@ class BoardService:
         names = [resolve_overlay(name, cfg.platform, boot['overlay_prefix'], boot['overlay_files'],
                                  p.get('overlay_aliases', {})) for name in overlays_for(cfg, self.catalog)]
         return {'platform': cfg.platform, 'boot_file': boot['path'], 'overlay_prefix': boot['overlay_prefix'],
-                'overlays': names, 'user_overlays': p.get('user_overlays', {})}
+                'overlays': names, 'user_overlays': boot['values'].get('user_overlays', '').split(),
+                'warnings': self.overlay_warnings(names, boot)}
+
+    def overlay_warnings(self, names, info):
+        warnings = []
+        for name in names:
+            full = info['overlay_prefix'] + '-' + name if info['overlay_prefix'] else name
+            if full not in info['overlay_files']:
+                warnings.append(f'{full}.dtbo not found in standard overlay directories; a user overlay may provide this hardware')
+        return warnings
+
+    def initial_configuration(self):
+        try:
+            return self.read_eeprom(), 'EEPROM configuration loaded'
+        except (ValueError, TypeError, OSError, KeyError) as exc:
+            return self.defaults(), f'Defaults loaded; EEPROM: {exc}'
 
     def eeprom_status(self, write=False):
         return self.eeprom.availability(write=write)
@@ -246,17 +261,11 @@ class BoardService:
         else:
             names = self.overlays(cfg)['overlays']
         new = patch_boot(old, names, user_overlay)
-        # Verify every stock/user overlay which would be applied, including retained ones.
-        values = boot_values(new)
-        for name in values.get('overlays', '').split():
-            full = info['overlay_prefix'] + '-' + name if info['overlay_prefix'] else name
-            if full not in info['overlay_files']:
-                raise ValueError(f'{full}.dtbo not found')
-        for name in values.get('user_overlays', '').split():
-            if name not in info['user_overlay_files']:
-                raise ValueError(f'{name}.dtbo not found')
         return {'target': info['path'], 'before': old, 'after': new,
-                'overlay_prefix': info['overlay_prefix'], 'changed': old != new}
+                'overlay_prefix': info['overlay_prefix'], 'changed': old != new,
+                'current_overlay_string': 'overlays=' + info['values'].get('overlays', ''),
+                'proposed_overlay_string': 'overlays=' + ' '.join(names),
+                'warnings': self.overlay_warnings(names, info), 'eeprom_overlay': user_overlay}
 
     def apply_boot_plan(self, plan, confirmed=False):
         require_confirmation(confirmed)
@@ -266,13 +275,8 @@ class BoardService:
         values = boot_values(plan['after'])
         if values.get('overlay_prefix', '') != info['overlay_prefix']:
             raise ValueError('Boot overlay prefix changed since preview')
-        for name in values.get('overlays', '').split():
-            full = info['overlay_prefix'] + '-' + name if info['overlay_prefix'] else name
-            if full not in info['overlay_files']:
-                raise ValueError(f'{full}.dtbo not found')
-        for name in values.get('user_overlays', '').split():
-            if name not in info['user_overlay_files']:
-                raise ValueError(f'{name}.dtbo not found')
+        if plan.get('eeprom_overlay') and plan['eeprom_overlay'] not in info['user_overlay_files']:
+            raise ValueError(f"{plan['eeprom_overlay']}.dtbo not found")
         if not plan['changed']:
             return None
         return self.boot.write(plan['target'], plan['after'])

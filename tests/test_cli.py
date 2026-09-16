@@ -47,10 +47,12 @@ class CliTests(unittest.TestCase):
                 json.loads(result.stdout)
             env = boot / 'armbianEnv.txt'
             original = env.read_text()
+            (overlays / 'rk3308-spi1-w5500.dtbo').unlink()
             preview = self.run_cli('boot', 'preview', '--config', config, '--boot-dir', str(boot), '--json')
             self.assertEqual(preview.returncode, 0, preview.stderr)
             self.assertEqual(env.read_text(), original)
             self.assertTrue(json.loads(preview.stdout)['changed'])
+            self.assertIn('rk3308-spi1-w5500.dtbo', json.loads(preview.stdout)['warnings'][0])
             denied = self.run_cli('boot', 'write', '--config', config, '--boot-dir', str(boot))
             self.assertNotEqual(denied.returncode, 0)
             self.assertEqual(env.read_text(), original)

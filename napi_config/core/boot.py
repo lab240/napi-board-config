@@ -24,8 +24,7 @@ def resolve_overlay(name, platform, prefix, files, aliases=None):
         full = full_prefix + '-' + logical
         if full in files:
             return logical if prefix else full
-    expected = ', '.join(full_prefix + '-' + logical + '.dtbo' for logical in names)
-    raise ValueError(f'Overlay not found: {expected}')
+    return name if prefix else full_prefix + '-' + name
 
 
 def patch_boot(text, overlays, user_overlay=None):

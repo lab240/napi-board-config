@@ -1,5 +1,4 @@
 import curses
-import difflib
 import textwrap
 from ..core.models import INTERFACES, IF_BY_KEY
 
@@ -22,11 +21,11 @@ class UI:
     def __init__(self, stdscr, service):
         self.stdscr = stdscr
         self.service = service
-        self.cfg = service.defaults()
+        self.cfg, initial_status = service.initial_configuration()
         self.action_states = {}
         self.boot_summary = "Not detected"
         self.blob = None
-        self.status = "Ready"
+        self.status = initial_status
         self.cursor = 0
         self.rows = list(self.ACTIONS) + [
             ("field", "platform"),
@@ -99,7 +98,7 @@ class UI:
             "load_defaults": "[ Load defaults ]",
             "read": "[ Load EEPROM ]",
             "write_eeprom": "[ Write EEPROM ]",
-            "write_env": "[ Write overlay settings ]",
+            "write_env": "[ View and write overlay string ]",
             "profile_load": "[ Load board from local DB ]",
             "profile_add": "[ Save board to local DB ]",
             "profile_delete": "[ Delete board from local DB ]",
@@ -452,11 +451,14 @@ class UI:
     def write_env(self):
         def operation():
             plan = self.service.boot_plan(self.cfg)
-            self.preview_boot(plan)
+            wants_write = self.preview_boot(plan, offer_write=plan['changed'])
             if not plan['changed']:
                 self.status = 'Overlay settings already configured'
                 return False
-            if self.confirm_yes('Write overlay settings? Backup will be created. No reboot.'):
+            if not wants_write:
+                self.status = 'View only; boot file unchanged'
+                return False
+            if self.confirm_yes('Write overlay string? Backup will be created. No reboot.'):
                 self.service.apply_boot_plan(plan, confirmed=True)
             else:
                 self.status = 'Boot write cancelled'
@@ -469,13 +471,18 @@ class UI:
             self.view_text(info['path'] + '\nPrefix: ' + (info['overlay_prefix'] or 'none') + '\n\n' + info['content'])
         self.perform(operation)
 
-    def preview_boot(self, plan):
-        diff = ''.join(difflib.unified_diff(plan['before'].splitlines(keepends=True),
-                                          plan['after'].splitlines(keepends=True),
-                                          fromfile='current', tofile='proposed'))
-        self.view_text(plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none') + '\n\n' + (diff or 'No changes'))
+    def preview_boot(self, plan, offer_write=False):
+        # Presentation only; parsing and string generation belong to Core.
+        text = (plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none')
+                + '\n\nCURRENT:\n' + plan['current_overlay_string']
+                + '\n\nPROPOSED:\n' + plan['proposed_overlay_string'])
+        for warning in plan.get('warnings', []):
+            text += '\nWarning: ' + warning
+        if not plan['changed']:
+            text += '\nNo changes'
+        return self.view_text(text, offer_write=offer_write)
 
-    def view_text(self, text):
+    def view_text(self, text, offer_write=False):
         position = 0
         while True:
             h, w = self.stdscr.getmaxyx()
@@ -491,7 +498,8 @@ class UI:
                 except curses.error:
                     pass
             try:
-                self.stdscr.addnstr(h-1, 0, 'Up/Down scroll  PgUp/PgDn  q/Esc close', max(1, w-1), curses.A_DIM)
+                footer = 'Enter: confirm write  q/Esc: view only' if offer_write else 'Up/Down scroll  PgUp/PgDn  q/Esc close'
+                self.stdscr.addnstr(h-1, 0, footer, max(1, w-1), curses.A_DIM)
             except curses.error:
                 pass
             self.stdscr.refresh()
@@ -499,7 +507,9 @@ class UI:
             if ch == 3:
                 raise KeyboardInterrupt
             if ch in (27, ord('q'), ord('Q')):
-                return
+                return False
+            if offer_write and ch in (10, 13, curses.KEY_ENTER):
+                return True
             if ch in (curses.KEY_DOWN, ord('j')):
                 position += 1
             elif ch in (curses.KEY_UP, ord('k')):
