@@ -1,215 +1,109 @@
 # NAPI Board Config v17
 
-Один Python-пакет с общим Core для curses TUI и неинтерактивного CLI.
-Python 3.9+, PyYAML; web-зависимостей и сервера нет.
+Утилита для настройки плат NAPI под Armbian и NapiLinux/U-Boot.
+Позволяет читать и записывать EEPROM, выбирать профиль платы, задавать серийный
+номер и дату изготовления, генерировать MAC-адреса и формировать строку overlays
+для загрузчика. Сейчас поддерживается платформа RK3308 и профиль FCU3308.
 
-## Запуск из каталога проекта
+Доступны текстовое меню (TUI) и неинтерактивная командная строка (CLI).
+Оба интерфейса используют общий Core; Linux и аппаратура вынесены в отдельные
+адаптеры. Сервер, web-зависимости и отдельная БД не нужны.
+
+## Зависимости и запуск
+
+Python 3.9+, PyYAML и модуль curses из Python. Для Debian/Ubuntu/Armbian:
 
 ```bash
+sudo apt install python3-yaml
 ./napi-config tui
-python3 napi-board-config.py --db ./boards.yaml
-python3 -m napi_config --help
 ```
 
-Для установки команды `napi-config` в Python-окружение:
+Из каталога проекта можно запускать `./napi-config` или `python3 -m napi_config`.
+Для установки команды в Python-окружение с pip:
 
 ```bash
 python3 -m pip install .
 napi-config --help
 ```
 
-Повышенные привилегии нужны только для доступа к устройствам и boot-файлам.
-При установке YAML помещаются в `share/napi-config` Python-окружения;
-`--db` и `--platforms` позволяют указать рабочие файлы явно.
+Для EEPROM и boot-файлов могут потребоваться права root. Сохранён прежний запуск:
+`python3 napi-board-config.py`.
 
-## CLI
+## Команды CLI
+
+В примерах используется установленная команда `napi-config`.
+
+| Команда | Назначение |
+| --- | --- |
+| `napi-config tui` | Открыть текстовое меню |
+| `napi-config eeprom show` | Прочитать EEPROM и проверить формат, CRC и значения |
+| `napi-config eeprom write --config instance.json --yes` | Записать конфигурацию и проверить чтением |
+| `napi-config mac generate --yes --output instance.json` | Сгенерировать восемь последовательных MAC и сохранить JSON |
+| `napi-config board info` | Показать конфигурацию и данные экземпляра из EEPROM |
+| `napi-config overlay list` | Сформировать список overlays по конфигурации EEPROM |
+| `napi-config boot show` | Показать текущий boot-файл |
+| `napi-config boot preview` | Показать текущие/предлагаемые строки и предупреждения без записи |
+| `napi-config boot write --yes` | Обновить строку overlays по EEPROM с backup, без reboot |
+| `napi-config hardware detect` | Показать обнаруженные I2C, EEPROM и Device Tree |
+| `napi-config --version` | Показать версию |
+
+Параметры указываются после раздела и действия:
+
+- `--json` — машинный вывод для всех команд, кроме TUI.
+- `--eeprom PATH` — EEPROM device или бинарный файл; по умолчанию
+  `/sys/bus/i2c/devices/1-0050/eeprom`.
+- `--db PATH`, `--platforms PATH` — пути к YAML-профилям и определениям платформ.
+- `--boot-dir DIR` — каталог boot-файлов; по умолчанию `/boot`.
+- `--config instance.json` — источник для board/overlay/mac и boot preview/write.
+- `--profile ID REV --yes` — reusable-профиль вместо EEPROM/JSON для этих операций.
+- `--yes` — явное подтверждение генерации, применения профиля или записи.
+
+Пример подготовки экземпляра без записи EEPROM:
 
 ```bash
-napi-config eeprom show --json
-napi-config board info --json
-napi-config overlay list --json
-napi-config hardware detect --json
-napi-config boot show
-napi-config boot preview --json
-napi-config mac generate --yes --output instance.json --json
-napi-config mac generate --profile 6 1 --yes --output instance.json --json
-napi-config board info --config instance.json
-napi-config overlay list --config instance.json
-napi-config boot preview --config instance.json --json
-napi-config boot write --config instance.json --yes
-napi-config eeprom write --config instance.json --yes
+./napi-config mac generate --profile 6 1 --yes --output instance.json --json
+./napi-config board info --config instance.json
+./napi-config boot preview --config instance.json --json
 ```
 
-Без установки используйте `./napi-config` или `python3 -m napi_config`.
-`eeprom show`, `board info` и `overlay list` по умолчанию читают EEPROM.
-Для `board info` и `overlay list` можно указать `--config` или
-`--profile ID REV --yes`. Генерация без источника использует новую конфигурацию
-по умолчанию; чтобы сохранить текущие serial/date, задайте `--config`.
-Без `--output` результат генерации выводится в stdout и в файлы не записывается.
-Генерация MAC никогда сама не записывает EEPROM.
+Генерация MAC без источника создаёт конфигурацию по умолчанию; с `--config`
+сохраняет остальные поля экземпляра. Без `--output` результат идёт только в stdout.
+CLI не задаёт интерактивных вопросов. Результаты идут в stdout, ошибки — в stderr.
+Коды завершения: 0 — успех, 1 — ошибка операции, 2 — ошибка аргументов,
+130 — прерывание.
 
-Команды принимают `--eeprom PATH`, `--db PATH`, `--platforms PATH`, `--boot-dir DIR`
-после раздела и действия. Пример безопасного чтения fixture:
+## TUI и boot-конфигурация
 
-```bash
-napi-config eeprom show --eeprom /tmp/sample-eeprom.bin --json
-```
+При запуске меню корректная EEPROM-конфигурация загружается автоматически.
+Если EEPROM недоступна или некорректна, используются defaults с причиной в статусе.
+Чтение/запись недоступного устройства помечается `disabled`; выбор показывает причину.
 
-Генерация, применение профиля и запись требуют явного `--yes`.
-Интерактивных вопросов CLI не задаёт. JSON и обычные результаты идут в stdout,
-ошибки — в stderr. Коды завершения: 0 — успех, 1 — ошибка операции,
-2 — ошибка аргументов, 130 — прерывание.
-Instance JSON содержит все поля конфигурации, включая serial/date/MACs.
-В reusable `boards.yaml` эти три поля не сохраняются.
+Boot-файл (`armbianEnv.txt` или `uEnv.txt`) определяется автоматически.
+При неоднозначности программа не записывает файл. Текущий `overlay_prefix`
+сохраняется: с префиксом формируются короткие имена, без него — полные имена
+без `.dtbo`. Существующая `user_overlays=` сохраняется без изменений;
+произвольные пользовательские overlays не сопоставляются с интерфейсами платы.
 
-## TUI
+`View and write overlay string` показывает обе строки в CURRENT/PROPOSED.
+Предупреждения об отсутствующих стандартных `.dtbo` отображаются отдельно
+и не блокируют запись. q/Esc закрывает просмотр; Enter открывает подтверждение
+точным `yes`. Запись создаёт backup и не перезагружает устройство.
+Сервисная кнопка `Add EEPROM overlay and reboot` после `yes` меняет boot-файл
+и перезагружает плату. Если EEPROM объявлена в основном DTB, отдельный overlay
+для её чтения и записи не нужен.
 
-При запуске TUI автоматически загружает EEPROM, если формат, CRC и значения
-корректны. При ошибке остаются defaults, а причина показывается в статусе.
-Наличие стандартных overlay-файлов не влияет на загрузку конфигурации EEPROM.
+## Данные и проверка
 
-Сохранены навигация, прокрутка, двухколоночное меню на широком терминале,
-загрузка профилей, редактирование полей и действия EEPROM/boot.
-`View MACs` и Enter на строке MAC показывают адреса.
-`Generate new MACs`, загрузка профиля, сброс и операции записи требуют точное `yes`.
-Загрузка профиля сохраняет serial number, manufacturing date и MACs.
-Сервисное действие добавления EEPROM overlay может записать boot-файл
-и перезагрузить устройство после подтверждения.
-
-## Boot-конфигурация и доступность EEPROM
-
-Boot-файл определяется автоматически: `armbianEnv.txt` либо `uEnv.txt`.
-Если присутствуют оба, проверяется используемый `boot.scr` (при его отсутствии
-`boot.cmd`). При неоднозначности запись недоступна. В TUI нет переключателя файлов;
-показываются обнаруженный путь и текущий префикс.
-
-`View current boot config` открывает полный файл с прокруткой.
-`View and write overlay string` показывает текущую и предлагаемую строку.
-q/Esc закрывает просмотр без записи; Enter открывает подтверждение точным `yes`.
-После подтверждения программа создаёт backup
-и записывает автоматически сформированную строку без перезагрузки.
-CLI предоставляет `boot show`, `boot preview`, `boot write --yes`.
-
-Текущий `overlay_prefix` сохраняется. При непустом префиксе `overlays=` содержит
-короткие имена; без префикса — полные имена (`rk3308-…`) без `.dtbo`.
-Префикс из platforms.yaml в boot-файл не добавляется.
-Имена проверяются по реальным файлам в каталогах загрузчика. Для USB Host
-допускается проверенный вариант `otg-host`, если `usb20-host` отсутствует.
-Отсутствующий стандартный overlay показывается как предупреждение и не блокирует
-просмотр или запись после подтверждения. Произвольные имена существующей
-`user_overlays=` не сопоставляются с интерфейсами и не проверяются.
-`user_overlays` всегда сохраняет полные имена. Остальные настройки и комментарии
-boot-файла сохраняются.
-
-`Load EEPROM` / `Write EEPROM` остаются видимыми с `disabled`, если устройство
-недоступно. Причина отображается при наведении и выборе; операция не выполняется.
-Отдельный EEPROM overlay не требуется, если устройство объявлено в основном DTB.
-`Add EEPROM overlay and reboot` получает `disabled`, если файл EEPROM overlay
-не найден, с указанием имени `.dtbo`. Действие требует `yes`, сохраняет backup,
-затем перезагружает устройство. Пункт скачивания overlay пока не реализован.
-
-## Архитектура и совместимость
-
-- `core/`: модели, EEPROM codec/CRC, MAC, проверки, профили, overlays,
-  расчёт boot-изменений и общий `BoardService`.
-- `hardware/`: Linux I2C/sysfs/Device Tree, EEPROM I/O, boot-файлы и reboot.
-- `storage/`: YAML/JSON, backups, получение профилей через urllib.
-- `tui/` и `cli/`: ввод и представление результатов, вызовы Core.
-- `bootstrap.py`: создание адаптеров и сервиса.
-
-Core не читает файлы и не импортирует curses, Hardware или Storage.
-Будущий REST адаптер может использовать тот же сервис с отдельной конфигурацией
-для каждого запроса. Подробности — в [ARCHITECTURE.md](ARCHITECTURE.md).
-
-EEPROM format v2, interface bits и YAML-схемы сохранены.
-Проверки стали строже: недопустимые поля отклоняются до изменения состояния;
-имя длиннее 32 UTF-8 байт отклоняется вместо обрезания.
-EEPROM read-back сравнивается с записанными bytes, затем проверяется кодеком.
-Профили/JSON сохраняются через временный файл с backup; boot-файлы также
-сохраняют backup и проверяются чтением. EEPROM backup автоматически не создаётся.
-
-## Проверка
+`boards.yaml` хранит reusable-профили, `platforms.yaml` — ID платформ, mappings
+и конфликты интерфейсов. Serial number, manufacturing date и MAC относятся
+к экземпляру: сохраняются в EEPROM/instance JSON и исключены из профилей.
+EEPROM использует формат v2 с CRC32 и восемью MAC-слотами.
+Загрузка профиля сохраняет данные экземпляра.
 
 ```bash
 python3 -B -m unittest discover -s tests -v
 ```
 
-Тесты используют временные файлы и подставные адаптеры, без доступа к плате.
-Проверяются EEPROM round trip/CRC, ограничения полей, подтверждения,
-MAC, сохранение данных экземпляра и производственный сценарий CLI.
-Реальная запись EEPROM, boot и reboot требуют отдельного аппаратного тестирования.
-
-## История до v16
-
-## Изменения v11
-
-- Без `--db` используется `boards.yaml` из каталога самого `napi-board-config.py`,
-  независимо от текущего рабочего каталога.
-- Подтверждение всех операций записи показывается в отдельном окне.
-  Для подтверждения нужно ввести точное `yes` маленькими буквами.
-- Отсутствие EEPROM не блокирует программу. `Load EEPROM` и `Write EEPROM`
-  сообщают `EEPROM is not initialized`, после чего возвращают управление в меню.
-  Local DB, BOARD CONFIG, Write boot file и SERVICE продолжают работать.
-- Убрано повторное `(required by EEPROM)` у I2C1.
-- Остальная логика v10 сохранена.
-
-### Запуск
-
-Из каталога программы:
-
-```bash
-sudo ./napi-board-config.py
-```
-
-Явный файл базы при необходимости:
-
-```bash
-sudo ./napi-board-config.py --db /path/to/boards.yaml
-```
-
-## v12
-- Load defaults resets only BOARD CONFIG after exact `yes`.
-- Load EEPROM asks before replacing current BOARD CONFIG.
-- Comment is stored in YAML only and never written to EEPROM.
-- Loading EEPROM clears Comment.
-- Load DB from GitHub downloads and validates the NAPILAB boards.yaml, then asks `yes`,
-  backs up the local DB and replaces it.
-
-## v13 — platform architecture
-
-- Fixed Armbian overlay naming: with `overlay_prefix=rk3308`, `overlays=` now contains
-  `uart1`, `uart2-m0`, `i2c1-ds1338`, etc., without a second `rk3308-`.
-- Board config now contains `platform`.
-- Platform ID is stored in EEPROM format v2. Experimental v1 is no longer supported.
-- Platform-specific overlay names, overlay prefix, conflicts and EEPROM user overlay are
-  stored in `platforms.yaml`, not hard-coded into board YAML.
-- `Write boot file` writes/updates `overlay_prefix=` for the selected platform.
-- `user_overlays=` keeps the complete user-overlay name (for RK3308:
-  `rk3308-i2c1-eeprom`).
-- RK3308 uses the established overlay mappings listed in platforms.yaml. RK3568 is intentionally not guessed: add its real mapping to
-  `platforms.yaml` when its overlays/pin conflicts are known.
-
-## v14 — board instance data
-
-EEPROM format v2 is now the clean production-oriented format. It contains platform ID,
-product/revision, interface mask, board name, serial number, manufacture date, eight MAC
-slots and CRC32. Experimental EEPROM v1 compatibility was removed.
-
-`BOARD INSTANCE / EEPROM` data:
-- Serial number: editable uint32.
-- Manufacture date: editable as YYYY-MM-DD; when empty, editing proposes today's date.
-- MAC addresses: eight locally-administered unicast addresses generated as one contiguous block.
-- `Generate MACs` replaces existing MACs only after exact `yes`.
-- `View MACs` displays the stored/generated addresses.
-- Serial/date/MACs are EEPROM-only and are not saved in boards.yaml.
-- Loading a board model from local DB preserves current serial/date/MACs.
-
-
-## v14
-- EEPROM v2 contains serial number, manufacture date, 8 MAC slots and CRC32.
-- Serial/date/MACs are instance-only: they are not saved to boards.yaml.
-- Empty manufacture date proposes today's date when edited.
-- Generate MACs creates 8 sequential locally-administered unicast MAC addresses.
-- Existing MACs require exact `yes` before replacement.
-- View MACs displays the current addresses.
-- Loading a board from local DB preserves serial/date/MACs.
+Тесты работают на временных файлах и подставных адаптерах.
+Подробности структуры — в [ARCHITECTURE.md](ARCHITECTURE.md).
+Лицензия — [MIT](LICENSE).
