@@ -473,15 +473,17 @@ class UI:
 
     def preview_boot(self, plan, offer_write=False):
         # Presentation only; parsing and string generation belong to Core.
-        text = (plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none')
-                + '\n\nCURRENT:\n' + plan['current_overlay_string']
+        text = plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none')
+        if plan.get('warnings'):
+            text += '\n\nWARNINGS (not written to boot file):'
+            for warning in plan['warnings']:
+                text += '\n' + warning
+        if not plan['changed']:
+            text += '\n\nNo changes'
+        text += ('\n\nCURRENT:\n' + plan['current_overlay_string']
                 + '\n' + plan['current_user_overlay_string']
                 + '\n\nPROPOSED:\n' + plan['proposed_overlay_string']
                 + '\n' + plan['proposed_user_overlay_string'])
-        for warning in plan.get('warnings', []):
-            text += '\nWarning: ' + warning
-        if not plan['changed']:
-            text += '\nNo changes'
         return self.view_text(text, offer_write=offer_write)
 
     def view_text(self, text, offer_write=False):
