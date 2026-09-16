@@ -6,9 +6,10 @@ import sys
 def parser():
     from ..bootstrap import DEFAULT_DB, DEFAULT_EEPROM, DEFAULT_PLATFORMS
     result = argparse.ArgumentParser(prog='napi-config')
-    result.add_argument('--version', action='version', version='napi-config 16')
+    result.add_argument('--version', action='version', version='napi-config 17')
     groups = result.add_subparsers(dest='group', required=True)
-    actions = {'eeprom': ['show', 'write'], 'mac': ['generate'], 'board': ['info'], 'overlay': ['list'], 'hardware': ['detect'], 'tui': []}
+    actions = {'eeprom': ['show', 'write'], 'mac': ['generate'], 'board': ['info'], 'overlay': ['list'],
+               'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
         group_parser = groups.add_parser(group)
         commands = group_parser.add_subparsers(dest='action', required=True) if names else None
@@ -17,9 +18,10 @@ def parser():
             command.add_argument('--eeprom', default=DEFAULT_EEPROM)
             command.add_argument('--db', default=DEFAULT_DB)
             command.add_argument('--platforms', default=DEFAULT_PLATFORMS)
+            command.add_argument('--boot-dir', default='/boot', help='Boot directory (auto-detect env file within it)')
             if group != 'tui':
                 command.add_argument('--json', action='store_true', help='Machine-readable JSON output')
-            if group in ('board', 'overlay', 'mac'):
+            if group in ('board', 'overlay', 'mac') or (group == 'boot' and name != 'show'):
                 inputs = command.add_mutually_exclusive_group()
                 inputs.add_argument('--config', help='Instance JSON configuration')
                 inputs.add_argument('--profile', nargs=2, type=int, metavar=('ID', 'REV'), help='Reusable profile; requires --yes')
@@ -40,6 +42,9 @@ def execute(args, service):
             return service.document(service.read_eeprom())
         service.write_eeprom(service.load_configuration(args.config), confirmed=args.yes)
         return {'written': True, 'verified': True}
+    if args.group == 'boot' and args.action == 'show':
+        info = service.boot_info()
+        return {'path': info['path'], 'overlay_prefix': info['overlay_prefix'], 'content': info['content']}
     if args.config:
         cfg = service.load_configuration(args.config)
     elif args.profile:
@@ -59,6 +64,12 @@ def execute(args, service):
         return service.document(cfg)
     if args.group == 'overlay':
         return service.overlays(cfg)
+    if args.group == 'boot':
+        plan = service.boot_plan(cfg)
+        if args.action == 'write':
+            backup = service.apply_boot_plan(plan, confirmed=args.yes)
+            return {'path': plan['target'], 'changed': plan['changed'], 'backup': backup, 'reboot': False}
+        return plan
     return service.document(cfg)
 
 
@@ -66,7 +77,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         from ..bootstrap import create_service
-        service = create_service(args.eeprom, args.db, args.platforms)
+        service = create_service(args.eeprom, args.db, args.platforms, args.boot_dir)
         if args.group == 'tui':
             from ..tui.app import run
             return run(service)

@@ -1,4 +1,4 @@
-# NAPI Board Config v16
+# NAPI Board Config v17
 
 Один Python-пакет с общим Core для curses TUI и неинтерактивного CLI.
 Python 3.9+, PyYAML; web-зависимостей и сервера нет.
@@ -29,10 +29,14 @@ napi-config eeprom show --json
 napi-config board info --json
 napi-config overlay list --json
 napi-config hardware detect --json
+napi-config boot show
+napi-config boot preview --json
 napi-config mac generate --yes --output instance.json --json
 napi-config mac generate --profile 6 1 --yes --output instance.json --json
 napi-config board info --config instance.json
 napi-config overlay list --config instance.json
+napi-config boot preview --config instance.json --json
+napi-config boot write --config instance.json --yes
 napi-config eeprom write --config instance.json --yes
 ```
 
@@ -44,7 +48,7 @@ napi-config eeprom write --config instance.json --yes
 Без `--output` результат генерации выводится в stdout и в файлы не записывается.
 Генерация MAC никогда сама не записывает EEPROM.
 
-Команды принимают `--eeprom PATH`, `--db PATH`, `--platforms PATH`
+Команды принимают `--eeprom PATH`, `--db PATH`, `--platforms PATH`, `--boot-dir DIR`
 после раздела и действия. Пример безопасного чтения fixture:
 
 ```bash
@@ -67,6 +71,34 @@ Instance JSON содержит все поля конфигурации, вкл�
 Загрузка профиля сохраняет serial number, manufacturing date и MACs.
 Сервисное действие добавления EEPROM overlay может записать boot-файл
 и перезагрузить устройство после подтверждения.
+
+## Boot-конфигурация и доступность EEPROM
+
+Boot-файл определяется автоматически: `armbianEnv.txt` либо `uEnv.txt`.
+Если присутствуют оба, проверяется используемый `boot.scr` (при его отсутствии
+`boot.cmd`). При неоднозначности запись недоступна. В TUI нет переключателя файлов;
+показываются обнаруженный путь и текущий префикс.
+
+`View current boot config` открывает полный файл с прокруткой.
+`Write overlay settings` показывает изменения, затем требует `yes`, создаёт backup
+и записывает автоматически сформированную строку без перезагрузки.
+CLI предоставляет `boot show`, `boot preview`, `boot write --yes`.
+
+Текущий `overlay_prefix` сохраняется. При непустом префиксе `overlays=` содержит
+короткие имена; без префикса — полные имена (`rk3308-…`) без `.dtbo`.
+Префикс из platforms.yaml в boot-файл не добавляется.
+Имена проверяются по реальным файлам в каталогах загрузчика. Для USB Host
+допускается проверенный вариант `otg-host`, если `usb20-host` отсутствует.
+Отсутствующий overlay блокирует запись и указывается в ошибке.
+`user_overlays` всегда сохраняет полные имена. Остальные настройки и комментарии
+boot-файла сохраняются.
+
+`Load EEPROM` / `Write EEPROM` остаются видимыми с `disabled`, если устройство
+недоступно. Причина отображается при наведении и выборе; операция не выполняется.
+Отдельный EEPROM overlay не требуется, если устройство объявлено в основном DTB.
+`Add EEPROM overlay and reboot` получает `disabled`, если файл EEPROM overlay
+не найден, с указанием имени `.dtbo`. Действие требует `yes`, сохраняет backup,
+затем перезагружает устройство. Пункт скачивания overlay пока не реализован.
 
 ## Архитектура и совместимость
 

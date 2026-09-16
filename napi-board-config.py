@@ -11,9 +11,10 @@ def main():
     parser.add_argument('--db', default=DEFAULT_DB)
     parser.add_argument('--platforms', default=DEFAULT_PLATFORMS)
     parser.add_argument('--dump', action='store_true')
+    parser.add_argument('--boot-dir', default='/boot')
     args = parser.parse_args()
     try:
-        service = create_service(args.eeprom, args.db, args.platforms)
+        service = create_service(args.eeprom, args.db, args.platforms, args.boot_dir)
         if args.dump:
             cfg = service.read_eeprom()
             for key, value in service.document(cfg).items():

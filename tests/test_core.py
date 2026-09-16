@@ -58,6 +58,7 @@ class CoreTests(unittest.TestCase):
         other = encode_config(BoardConfig(product_id=42), self.service.catalog)
         self.service.eeprom = Mock()
         self.service.eeprom.read.return_value = other
+        self.service.eeprom.availability.return_value = {'enabled': True, 'reason': ''}
         with self.assertRaisesRegex(OSError, 'mismatch'):
             self.service.write_eeprom(self.cfg, confirmed=True)
 
@@ -99,8 +100,10 @@ class CoreTests(unittest.TestCase):
 
     def test_boot_preview_and_stale_plan(self):
         self.service.boot = Mock()
-        self.service.boot.read.return_value = 'other=keep\noverlays=old\nuser_overlays=custom\n'
-        plan = self.service.boot_plan(BoardConfig(), 'armbianEnv')
+        self.service.boot.detect.return_value = '/boot/armbianEnv.txt'
+        self.service.boot.inventory.return_value = {'overlay_files': {'rk3308-i2c1': '/fake.dtbo'}, 'user_overlay_files': {'custom': '/fake.dtbo'}}
+        self.service.boot.read.return_value = 'overlay_prefix=rk3308\nother=keep\noverlays=old\nuser_overlays=custom\n'
+        plan = self.service.boot_plan(BoardConfig())
         self.assertIn('other=keep', plan['after'])
         self.assertIn('user_overlays=custom', plan['after'])
         self.assertIn('overlays=i2c1', plan['after'])

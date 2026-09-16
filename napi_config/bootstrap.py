@@ -15,6 +15,6 @@ DEFAULT_DB = str(ROOT / 'boards.yaml')
 DEFAULT_PLATFORMS = str(ROOT / 'platforms.yaml')
 
 
-def create_service(eeprom_path=DEFAULT_EEPROM, db_path=DEFAULT_DB, platforms_path=DEFAULT_PLATFORMS):
+def create_service(eeprom_path=DEFAULT_EEPROM, db_path=DEFAULT_DB, platforms_path=DEFAULT_PLATFORMS, boot_dir='/boot'):
     return BoardService(PlatformCatalog(load_platforms(platforms_path)), LinuxEeprom(eeprom_path),
-                        YamlProfiles(db_path), LinuxBootFiles(), JsonConfigurations(), LinuxProbe(eeprom_path), ProfileDownload())
+                        YamlProfiles(db_path), LinuxBootFiles(boot_dir), JsonConfigurations(), LinuxProbe(eeprom_path), ProfileDownload())

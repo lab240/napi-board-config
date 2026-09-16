@@ -13,6 +13,12 @@ class CliTests(unittest.TestCase):
     def test_production_flow(self):
         with tempfile.TemporaryDirectory() as directory:
             config = str(Path(directory) / 'instance.json')
+            boot = Path(directory) / 'boot'
+            overlays = boot / 'dtb/rockchip/overlay'
+            overlays.mkdir(parents=True)
+            (boot / 'armbianEnv.txt').write_text('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\n')
+            for name in ['i2c1-ds1338', 'i2c3-m0', 'usb20-host', 'uart1', 'uart2-m0', 'uart4', 'spi1-w5500']:
+                (overlays / ('rk3308-' + name + '.dtbo')).touch()
             eeprom = Path(directory) / 'eeprom'
             eeprom.write_bytes(b'\xff' * 256)
             denied = self.run_cli('mac', 'generate', '--output', config)
@@ -36,9 +42,24 @@ class CliTests(unittest.TestCase):
             self.assertEqual(decoded['macs'], data['macs'])
             self.assertEqual(decoded['product_id'], data['product_id'])
             for group, action in [('board', 'info'), ('overlay', 'list')]:
-                result = self.run_cli(group, action, '--config', config, '--json')
+                result = self.run_cli(group, action, '--config', config, '--boot-dir', str(boot), '--json')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 json.loads(result.stdout)
+            env = boot / 'armbianEnv.txt'
+            original = env.read_text()
+            preview = self.run_cli('boot', 'preview', '--config', config, '--boot-dir', str(boot), '--json')
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(env.read_text(), original)
+            self.assertTrue(json.loads(preview.stdout)['changed'])
+            denied = self.run_cli('boot', 'write', '--config', config, '--boot-dir', str(boot))
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertEqual(env.read_text(), original)
+            applied = self.run_cli('boot', 'write', '--config', config, '--boot-dir', str(boot), '--yes', '--json')
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            result = json.loads(applied.stdout)
+            self.assertFalse(result['reboot'])
+            self.assertEqual(Path(result['backup']).read_text(), original)
+            self.assertEqual(env.read_text(), json.loads(preview.stdout)['after'])
 
     def test_invalid_eeprom_has_error_and_no_stdout(self):
         with tempfile.TemporaryDirectory() as directory:

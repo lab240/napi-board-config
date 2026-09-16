@@ -1,7 +1,8 @@
 import curses
+import difflib
+import textwrap
 from ..core.models import INTERFACES, IF_BY_KEY
 
-ENV_TARGETS = {"armbianEnv": "/boot/armbianEnv.txt", "uEnv": "/boot/uEnv.txt"}
 
 class UI:
     ACTIONS = [
@@ -15,13 +16,15 @@ class UI:
         ("action", "github_db"),
         ("action", "view_macs"),
         ("action", "generate_macs"),
+        ("action", "view_boot"),
     ]
 
     def __init__(self, stdscr, service):
         self.stdscr = stdscr
         self.service = service
         self.cfg = service.defaults()
-        self.env_target = "armbianEnv"
+        self.action_states = {}
+        self.boot_summary = "Not detected"
         self.blob = None
         self.status = "Ready"
         self.cursor = 0
@@ -92,11 +95,11 @@ class UI:
                 return
 
     def action_label(self, key):
-        return {
+        label = {
             "load_defaults": "[ Load defaults ]",
             "read": "[ Load EEPROM ]",
             "write_eeprom": "[ Write EEPROM ]",
-            "write_env": "[ Write boot file ]",
+            "write_env": "[ Write overlay settings ]",
             "profile_load": "[ Load board from local DB ]",
             "profile_add": "[ Save board to local DB ]",
             "profile_delete": "[ Delete board from local DB ]",
@@ -104,8 +107,11 @@ class UI:
             "view_macs": "[ View MACs ]",
             "generate_macs": "[ Generate new MACs ]",
             "enable_i2c1_eeprom": "[ Add EEPROM overlay and reboot ]",
+            "view_boot": "[ View current boot config ]",
             "quit": "[ Quit ]",
         }[key]
+        state = getattr(self, 'action_states', {}).get(key, {})
+        return label + (' disabled' if state.get('enabled') is False else '')
 
     def config_text(self, kind, key):
         if kind == "field":
@@ -120,7 +126,7 @@ class UI:
             if key == "comment":
                 return f"Comment      : {self.cfg.comment}"
             if key == "env_target":
-                return f"Boot file    : {ENV_TARGETS.get(self.env_target, self.env_target)}"
+                return f"Boot config  : {self.boot_summary}"
             if key == "rtc_type":
                 rtc = self.cfg.rtc_i2c1.upper() if self.cfg.rtc_i2c1 != "none" else "-"
                 return f"    RTC type : {rtc}"
@@ -144,6 +150,13 @@ class UI:
         return self.action_label(key)
 
     def draw(self):
+        self.action_states = {key: self.service.action_status(self.cfg, key)
+                              for key in ('read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env')}
+        try:
+            info = self.service.boot_info()
+            self.boot_summary = info['path'] + ' (prefix: ' + (info['overlay_prefix'] or 'none') + ')'
+        except (ValueError, OSError) as exc:
+            self.boot_summary = str(exc)
         s = self.stdscr
         s.erase()
         h, w = s.getmaxyx()
@@ -156,7 +169,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v16 "
+        title = " NAPI Board Config v17 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -176,7 +189,7 @@ class UI:
         service_index = next(i for i,x in enumerate(self.rows) if x == ("action","enable_i2c1_eeprom"))
         for idx in range(first_cfg, env_index):
             logical.append(("item", idx, None))
-        logical.append(("section", "--- PROGRAM SETTINGS ---", None))
+        logical.append(("section", "--- BOOT CONFIGURATION ---", None))
         logical.append(("item", env_index, None))
         logical.append(("section", "--- SERVICE ---", None))
         for idx in range(service_index, len(self.rows)):
@@ -235,7 +248,10 @@ class UI:
             y+=1
 
         try:
-            s.addnstr(h-2,1,self.status,max(1,w-2))
+            kind, key = self.rows[self.cursor]
+            state = self.action_states.get(key, {}) if kind == 'action' else {}
+            message = 'disabled: ' + state['reason'] if state.get('enabled') is False else self.status
+            s.addnstr(h-2,1,message,max(1,w-2))
             nav="Arrows move  Space toggle  Enter select  q quit  Ctrl-C exit"
             s.addnstr(h-1,1,nav,max(1,w-2),curses.A_DIM)
         except curses.error:
@@ -253,6 +269,12 @@ class UI:
 
     def activate(self):
         kind,key=self.rows[self.cursor]
+        if kind == 'action':
+            state = self.service.action_status(self.cfg, key)
+            if not state['enabled']:
+                self.status = 'disabled: ' + state['reason']
+                self.view_text(self.status)
+                return False
         if kind=="field":
             self.edit_field(key); return False
         if kind=="iface":
@@ -266,6 +288,7 @@ class UI:
             "read":self.read_eeprom,
             "write_eeprom":self.write_eeprom,
             "write_env":self.write_env,
+            "view_boot":self.view_boot,
             "profile_load":self.profile_load,
             "profile_add":self.profile_add,
             "profile_delete":self.profile_delete,
@@ -291,7 +314,7 @@ class UI:
 
     def edit_field(self, key):
         if key == 'env_target':
-            self.env_target = 'uEnv' if self.env_target == 'armbianEnv' else 'armbianEnv'
+            self.view_boot()
             return
         if key == 'platform':
             self.perform(lambda: self.service.next_platform(self.cfg), update=True)
@@ -360,10 +383,11 @@ class UI:
 
     def enable_i2c1_eeprom(self):
         def operation():
-            plan = self.service.boot_plan(self.cfg, self.env_target, ensure_eeprom=True)
+            plan = self.service.boot_plan(self.cfg, ensure_eeprom=True)
             if not plan['changed']:
                 self.status = 'EEPROM overlay already configured'
                 return False
+            self.preview_boot(plan)
             if not self.confirm_yes('Add EEPROM overlay and reboot? Boot configuration will be changed.'):
                 self.status = 'Cancelled'
                 return False
@@ -427,13 +451,63 @@ class UI:
 
     def write_env(self):
         def operation():
-            plan = self.service.boot_plan(self.cfg, self.env_target)
-            if self.confirm_yes('WRITE boot configuration with current overlays?'):
+            plan = self.service.boot_plan(self.cfg)
+            self.preview_boot(plan)
+            if not plan['changed']:
+                self.status = 'Overlay settings already configured'
+                return False
+            if self.confirm_yes('Write overlay settings? Backup will be created. No reboot.'):
                 self.service.apply_boot_plan(plan, confirmed=True)
             else:
                 self.status = 'Boot write cancelled'
                 return False
         self.perform(operation)
+
+    def view_boot(self):
+        def operation():
+            info = self.service.boot_info()
+            self.view_text(info['path'] + '\nPrefix: ' + (info['overlay_prefix'] or 'none') + '\n\n' + info['content'])
+        self.perform(operation)
+
+    def preview_boot(self, plan):
+        diff = ''.join(difflib.unified_diff(plan['before'].splitlines(keepends=True),
+                                          plan['after'].splitlines(keepends=True),
+                                          fromfile='current', tofile='proposed'))
+        self.view_text(plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none') + '\n\n' + (diff or 'No changes'))
+
+    def view_text(self, text):
+        position = 0
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            lines = []
+            for line in text.splitlines():
+                lines.extend(textwrap.wrap(line, max(1, w-2), replace_whitespace=False, drop_whitespace=False) or [''])
+            visible = max(1, h-2)
+            position = max(0, min(position, max(0, len(lines)-visible)))
+            self.stdscr.erase()
+            for row, line in enumerate(lines[position:position+visible]):
+                try:
+                    self.stdscr.addnstr(row, 1, line, max(1, w-2))
+                except curses.error:
+                    pass
+            try:
+                self.stdscr.addnstr(h-1, 0, 'Up/Down scroll  PgUp/PgDn  q/Esc close', max(1, w-1), curses.A_DIM)
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            ch = self.stdscr.getch()
+            if ch == 3:
+                raise KeyboardInterrupt
+            if ch in (27, ord('q'), ord('Q')):
+                return
+            if ch in (curses.KEY_DOWN, ord('j')):
+                position += 1
+            elif ch in (curses.KEY_UP, ord('k')):
+                position -= 1
+            elif ch == curses.KEY_NPAGE:
+                position += visible
+            elif ch == curses.KEY_PPAGE:
+                position -= visible
 
     def choose_profile(self,title):
         boards = self.service.list_profiles()

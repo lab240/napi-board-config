@@ -1,32 +1,46 @@
-def patch_boot(text, prefix, overlays, user_overlay=None, ensure_only=False):
-    lines = text.splitlines()
+import re
+
+
+def boot_values(text):
     values = {}
-    for line in lines:
-        if '=' in line and line.split('=', 1)[0] in ('overlay_prefix', 'overlays', 'user_overlays'):
-            key, value = line.split('=', 1)
-            values.setdefault(key, value)
-    if ensure_only:
-        existing = values.get('overlays', '').split()
-        if prefix:
-            existing = [v.removeprefix(prefix + '-') for v in existing]
-        variants = set(overlays)
-        if not any(v in variants for v in existing) and overlays:
-            existing.insert(0, overlays[0])
-        values['overlays'] = ' '.join(dict.fromkeys(existing))
-    else:
-        values['overlays'] = ' '.join(overlays)
-    if prefix:
-        values['overlay_prefix'] = prefix
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        if key.strip() in values:
+            raise ValueError(f'Duplicate boot setting: {key.strip()}')
+        values[key.strip()] = value.strip()
+    return values
+
+
+def resolve_overlay(name, platform, prefix, files, aliases=None):
+    names = [name] + list((aliases or {}).get(name, []))
+    # Platform mapping stores logical names; runtime prefix belongs to boot config.
+    full_prefix = prefix or platform
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', full_prefix):
+        raise ValueError(f'Invalid overlay prefix: {full_prefix}')
+    for logical in names:
+        full = full_prefix + '-' + logical
+        if full in files:
+            return logical if prefix else full
+    expected = ', '.join(full_prefix + '-' + logical + '.dtbo' for logical in names)
+    raise ValueError(f'Overlay not found: {expected}')
+
+
+def patch_boot(text, overlays, user_overlay=None):
+    # Only replace overlays/user_overlays. Never create or change overlay_prefix.
+    values = boot_values(text)
+    replacements = {'overlays': ' '.join(dict.fromkeys(overlays))}
     if user_overlay:
-        values['user_overlays'] = ' '.join(dict.fromkeys(values.get('user_overlays', '').split() + [user_overlay]))
+        replacements['user_overlays'] = ' '.join(dict.fromkeys(values.get('user_overlays', '').split() + [user_overlay]))
     result, seen = [], set()
-    for line in lines:
-        key = line.split('=', 1)[0]
-        if key in values:
-            if key not in seen:
-                result.append(key + '=' + values[key])
-                seen.add(key)
+    for line in text.splitlines():
+        key = line.split('=', 1)[0].strip() if '=' in line and not line.lstrip().startswith('#') else None
+        if key in replacements:
+            result.append(key + '=' + replacements[key])
+            seen.add(key)
         else:
             result.append(line)
-    result.extend(key + '=' + value for key, value in values.items() if key not in seen)
-    return '\n'.join(result).rstrip() + '\n'
+    result.extend(key + '=' + value for key, value in replacements.items() if key not in seen)
+    return '\n'.join(result) + '\n'
