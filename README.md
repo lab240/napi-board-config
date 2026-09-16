@@ -1,4 +1,4 @@
-# NAPI Board Config v14
+# NAPI Board Config v15
 
 ## Запуск
 
@@ -15,6 +15,8 @@ sudo ./napi-board-config.py --db ./boards.yaml
 - Load board from local DB
 - Save board to local DB
 - Delete board from local DB
+- View MACs
+- Generate new MACs
 
 На широком терминале ACTIONS показываются в два столбца. На узком — автоматически в один.
 Ниже расположены BOARD CONFIG, PROGRAM SETTINGS и SERVICE.
@@ -24,7 +26,17 @@ RTC теперь отдельный переключатель `[ ] RTC`. Пос
 
 Load board from local DB:
 - Enter — загрузить выбранную плату;
+- после выбора требуется точное подтверждение `yes`;
 - Esc или q — отменить без изменения текущей конфигурации.
+
+## v15
+
+- Добавлены действия `View MACs` и `Generate new MACs`. Enter на строке
+  `MAC addresses` также открывает просмотр адресов.
+- Генерация восьми новых MAC всегда требует `yes`, включая первую генерацию.
+  Адреса меняются только в памяти программы; EEPROM не записывается.
+- Загрузка профиля из local DB требует `yes` и сохраняет серийный номер,
+  дату изготовления и MAC текущего экземпляра.
 
 Все операции записи/изменения требуют точный ввод `yes` маленькими буквами.
 Перед изменением local DB автоматически создаётся timestamp backup `boards.yaml.bak-*`.

@@ -403,6 +403,8 @@ class UI:
         ("action", "profile_add"),
         ("action", "profile_delete"),
         ("action", "github_db"),
+        ("action", "view_macs"),
+        ("action", "generate_macs"),
     ]
 
     def __init__(self, stdscr, eeprom_path, db_path):
@@ -490,6 +492,8 @@ class UI:
             "profile_add": "[ Save board to local DB ]",
             "profile_delete": "[ Delete board from local DB ]",
             "github_db": "[ Load DB from GitHub ]",
+            "view_macs": "[ View MACs ]",
+            "generate_macs": "[ Generate new MACs ]",
             "enable_i2c1_eeprom": "[ Add EEPROM overlay + reboot ]",
             "quit": "[ Quit ]",
         }[key]
@@ -543,7 +547,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v14 "
+        title = " NAPI Board Config v15 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -881,14 +885,14 @@ class UI:
                 datetime.date.fromisoformat(value)
                 self.cfg.mfg_date=value
             elif key=="mac_count":
-                self.status="Use Generate MACs or View MACs"
+                self.view_macs()
         except Exception as e:
             self.status=f"Invalid value: {e}"; curses.beep()
 
     def generate_macs(self):
-        if self.cfg.macs:
-            if not self.confirm_yes("MAC addresses already exist. Generate new MAC addresses and replace them?"):
-                self.status="MAC generation cancelled"; return
+        if not self.confirm_yes("Generate 8 new MACs and replace current MACs? EEPROM stays unchanged."):
+            self.status = "MAC generation cancelled"
+            return
         # Locally administered unicast base; generate one random 40-bit suffix,
         # then allocate a contiguous block of 8 addresses.
         suffix=secrets.randbits(40)
@@ -903,6 +907,7 @@ class UI:
             low -= MAX_MACS
             base=(first << 40)|low
         self.cfg.macs=[(base+i).to_bytes(6,"big") for i in range(MAX_MACS)]
+        self.blob = None
         self.status=f"Generated {MAX_MACS} MAC addresses"
 
     def view_macs(self):
@@ -1065,6 +1070,12 @@ class UI:
     def profile_load(self):
         b=self.choose_profile("Load board from local DB")
         if b:
+            if not self.confirm_yes(
+                f"Load {b.get('name')} (ID={b.get('id')}, rev={b.get('rev')})? "
+                "Replace board config; keep serial number, date and MACs."
+            ):
+                self.status = "Board load cancelled"
+                return
             serial,mfg,macs=self.cfg.serial_number,self.cfg.mfg_date,list(self.cfg.macs)
             self.cfg=self.db.to_config(b)
             self.cfg.serial_number,self.cfg.mfg_date,self.cfg.macs=serial,mfg,macs
