@@ -66,6 +66,12 @@ class BootTests(unittest.TestCase):
         plan = self.service.boot_plan(BoardConfig())
         self.assertIn('rk3308-i2c1.dtbo', plan['warnings'][0])
         self.assertEqual(plan['proposed_overlay_string'], 'overlays=i2c1')
+        self.assertEqual(plan['current_user_overlay_string'], 'user_overlays=custom-any-name  another-name')
+        self.assertEqual(plan['proposed_user_overlay_string'], plan['current_user_overlay_string'])
+        ui = UI.__new__(UI)
+        ui.view_text = Mock()
+        ui.preview_boot(plan)
+        self.assertEqual(ui.view_text.call_args.args[0].count(plan['current_user_overlay_string']), 2)
         self.assertEqual(path.read_text(), original)
         with self.assertRaises(ValueError):
             self.service.apply_boot_plan(plan)

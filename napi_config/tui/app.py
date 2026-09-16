@@ -475,7 +475,9 @@ class UI:
         # Presentation only; parsing and string generation belong to Core.
         text = (plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none')
                 + '\n\nCURRENT:\n' + plan['current_overlay_string']
-                + '\n\nPROPOSED:\n' + plan['proposed_overlay_string'])
+                + '\n' + plan['current_user_overlay_string']
+                + '\n\nPROPOSED:\n' + plan['proposed_overlay_string']
+                + '\n' + plan['proposed_user_overlay_string'])
         for warning in plan.get('warnings', []):
             text += '\nWarning: ' + warning
         if not plan['changed']:

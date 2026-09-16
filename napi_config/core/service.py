@@ -265,6 +265,8 @@ class BoardService:
                 'overlay_prefix': info['overlay_prefix'], 'changed': old != new,
                 'current_overlay_string': 'overlays=' + info['values'].get('overlays', ''),
                 'proposed_overlay_string': 'overlays=' + ' '.join(names),
+                'current_user_overlay_string': 'user_overlays=' + info['values'].get('user_overlays', ''),
+                'proposed_user_overlay_string': 'user_overlays=' + boot_values(new).get('user_overlays', ''),
                 'warnings': self.overlay_warnings(names, info), 'eeprom_overlay': user_overlay}
 
     def apply_boot_plan(self, plan, confirmed=False):
