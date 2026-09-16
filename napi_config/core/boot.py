@@ -27,12 +27,10 @@ def resolve_overlay(name, platform, prefix, files, aliases=None):
     return name if prefix else full_prefix + '-' + name
 
 
-def patch_boot(text, overlays, user_overlay=None):
-    # Only replace overlays/user_overlays. Never create or change overlay_prefix.
-    values = boot_values(text)
+def patch_boot(text, overlays):
+    # Only replace overlays. Preserve user_overlays and overlay_prefix.
+    boot_values(text)
     replacements = {'overlays': ' '.join(dict.fromkeys(overlays))}
-    if user_overlay:
-        replacements['user_overlays'] = ' '.join(dict.fromkeys(values.get('user_overlays', '').split() + [user_overlay]))
     result, seen = [], set()
     for line in text.splitlines():
         key = line.split('=', 1)[0].strip() if '=' in line and not line.lstrip().startswith('#') else None

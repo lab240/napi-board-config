@@ -6,9 +6,9 @@ import sys
 def parser():
     from ..bootstrap import DEFAULT_DB, DEFAULT_EEPROM, DEFAULT_PLATFORMS
     result = argparse.ArgumentParser(prog='napi-config')
-    result.add_argument('--version', action='version', version='napi-config 17')
+    result.add_argument('--version', action='version', version='napi-config 18')
     groups = result.add_subparsers(dest='group', required=True)
-    actions = {'eeprom': ['show', 'write'], 'mac': ['generate'], 'board': ['info'], 'overlay': ['list'],
+    actions = {'eeprom': ['show', 'write', 'overlays', 'enable'], 'mac': ['generate'], 'board': ['info'], 'overlay': ['list'],
                'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
         group_parser = groups.add_parser(group)
@@ -28,6 +28,12 @@ def parser():
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm changes')
             if group == 'mac':
                 command.add_argument('--output', help='Save generated instance configuration as JSON')
+            if group == 'eeprom' and name in ('overlays', 'enable'):
+                command.add_argument('--platform', default='rk3308')
+            if group == 'eeprom' and name == 'enable':
+                command.add_argument('--overlay', required=True, help='Exact overlay name returned by eeprom overlays')
+                command.add_argument('--yes', action='store_true', help='Confirm chip, bus, address and boot write')
+                command.add_argument('--reboot', action='store_true', help='Reboot after confirmed setup')
             if group == 'eeprom' and name == 'write':
                 command.add_argument('--config', required=True, help='Instance JSON configuration to write')
                 command.add_argument('--yes', action='store_true', help='Confirm EEPROM write')
@@ -38,6 +44,16 @@ def execute(args, service):
     if args.group == 'hardware':
         return service.detect()
     if args.group == 'eeprom':
+        if args.action == 'overlays':
+            return service.eeprom_setup(args.platform)
+        if args.action == 'enable':
+            cfg = service.update(service.defaults(), 'platform', args.platform)
+            plan = service.boot_plan(cfg, eeprom_overlay=args.overlay)
+            backup = service.apply_boot_plan(plan, confirmed=args.yes)
+            if args.reboot:
+                service.reboot(confirmed=args.yes)
+            return {'path': plan['target'], 'changed': plan['changed'], 'backup': backup,
+                    'warnings': plan['warnings'], 'reboot': args.reboot}
         if args.action == 'show':
             return service.document(service.read_eeprom())
         service.write_eeprom(service.load_configuration(args.config), confirmed=args.yes)

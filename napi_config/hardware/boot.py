@@ -36,7 +36,7 @@ class LinuxBootFiles:
 
     def inventory(self, target, values):
         script = self._script()
-        stock_dirs, user_dirs = [], []
+        stock_dirs = []
         for expression in re.findall(r'([^\s"\']+\.dtbo)', script):
             if '${overlay_file}' not in expression:
                 continue
@@ -44,15 +44,14 @@ class LinuxBootFiles:
             directory = directory.replace('${prefix}', '').replace('${fdtfile}', values.get('fdtfile', ''))
             if '$' in directory or '..' in Path(directory).parts:
                 continue
-            destination = user_dirs if 'user_overlays' in script[max(0, script.find(expression)-220):script.find(expression)] or 'overlay-user' in directory else stock_dirs
-            destination.append(self.root / directory.lstrip('/'))
+            if 'overlay-user' in directory or 'user_overlays' in script[max(0, script.find(expression)-220):script.find(expression)]:
+                continue
+            stock_dirs.append(self.root / directory.lstrip('/'))
         if not stock_dirs:
             fdt_parent = Path(values.get('fdtfile', '')).parent
             stock_dirs = [self.root / 'dtb' / fdt_parent / 'overlay', self.root / 'dtb/overlay',
                           self.root / 'dtb/rockchip/overlay', self.root / 'dtb/overlays',
                           self.root / 'overlays', self.root / 'overlay']
-        if not user_dirs:
-            user_dirs = [self.root / 'overlay-user']
         def files(directories):
             result = {}
             for directory in directories:
@@ -60,9 +59,8 @@ class LinuxBootFiles:
                     for path in sorted(directory.glob('*.dtbo')):
                         result.setdefault(path.stem, str(path))
             return result
-        return {'overlay_files': files(stock_dirs), 'user_overlay_files': files(user_dirs),
-                'overlay_directories': [str(p) for p in dict.fromkeys(stock_dirs)],
-                'user_overlay_directories': [str(p) for p in dict.fromkeys(user_dirs)]}
+        return {'overlay_files': files(stock_dirs),
+                'overlay_directories': [str(p) for p in dict.fromkeys(stock_dirs)]}
 
     def write(self, target, content):
         path = Path(target)

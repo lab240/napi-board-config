@@ -20,8 +20,6 @@ platforms:
       rtc_ds3231: i2c1-ds3231
     overlay_aliases:
       usb20-host: [otg-host]
-    user_overlays:
-      eeprom: rk3308-i2c1-eeprom
     conflicts:
       spi1: [w5500_spi1, uart3]
       spi2: [w5500_spi2, uart1, uart2]

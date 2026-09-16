@@ -1,4 +1,5 @@
 from dataclasses import replace
+import re
 from .models import BoardConfig, IF_BY_KEY, RTC_CHOICES
 from .codec import encode_config, decode_config, overlays_for, platform_conflicts, format_mac
 from .configuration import validate_configuration, generate_macs, updated, from_document, to_document, default_date
@@ -79,8 +80,6 @@ class BoardService:
     def toggle_interface(self, cfg, key):
         if key not in IF_BY_KEY:
             raise ValueError(f'Unknown interface: {key}')
-        if key == 'i2c1':
-            raise ValueError('I2C1 is required for EEPROM and cannot be disabled')
         enabled = set(cfg.enabled)
         if key in enabled:
             enabled.remove(key)
@@ -152,6 +151,40 @@ class BoardService:
         if not status['enabled']:
             raise ValueError(status['reason'])
 
+    @staticmethod
+    def is_eeprom_overlay(name):
+        # Names identify candidates only. User must verify the actual chip/address.
+        return bool(re.search(r'(?:eeprom|(?:^|[-_])(?:at)?24c?[0-9]+)', name.lower()))
+
+    def eeprom_overlay_candidates(self, platform, info=None):
+        self.catalog.get(platform)
+        info = info if info is not None else self.boot_info()
+        prefix = info['overlay_prefix']
+        candidates = []
+        for full, path in sorted(info['overlay_files'].items()):
+            if prefix and not full.startswith(prefix + '-'):
+                continue
+            if not prefix and full.startswith(('rk', 'napi-rk')) and not full.startswith((platform + '-', 'napi-' + platform + '-')):
+                continue
+            name = full[len(prefix)+1:] if prefix else full
+            if self.is_eeprom_overlay(name):
+                candidates.append({'file': full + '.dtbo', 'name': name, 'path': path})
+        return candidates
+
+    def eeprom_setup(self, platform):
+        available = self.eeprom_status()
+        info = self.boot_info()
+        candidates = self.eeprom_overlay_candidates(platform, info)
+        if available['enabled']:
+            message = 'EEPROM is already accessible; an additional overlay is not required'
+        elif candidates:
+            message = 'Select a standard overlay only after verifying EEPROM model, I2C bus and address'
+        else:
+            message = ('No standard EEPROM overlay found. Install and configure a suitable overlay manually '
+                       'using user_overlays. User overlay files and user_overlays are not modified.')
+        return {'available': available['enabled'], 'reason': available['reason'],
+                'boot_file': info['path'], 'candidates': candidates, 'message': message}
+
     def action_status(self, cfg, action):
         if action in ('read', 'write_eeprom'):
             return self.eeprom_status(write=action == 'write_eeprom')
@@ -160,11 +193,9 @@ class BoardService:
         try:
             info = self.boot_info()
             if action == 'enable_i2c1_eeprom':
-                overlay = self.catalog.get(cfg.platform).get('user_overlays', {}).get('eeprom')
-                if not overlay:
-                    raise ValueError(f'EEPROM overlay is not defined for {cfg.platform}')
-                if overlay not in info['user_overlay_files']:
-                    raise ValueError(f'{overlay}.dtbo not found')
+                setup = self.eeprom_setup(cfg.platform)
+                if not setup['available'] and not setup['candidates']:
+                    raise ValueError(setup['message'])
             return {'enabled': True, 'reason': ''}
         except (ValueError, OSError) as exc:
             return {'enabled': False, 'reason': str(exc)}
@@ -241,33 +272,36 @@ class BoardService:
         require_confirmation(confirmed)
         self.profiles.save(self.validate_profiles(data))
 
-    def boot_plan(self, cfg, ensure_eeprom=False):
+    def boot_plan(self, cfg, eeprom_overlay=None):
         self.validate(cfg)
         info = self.boot_info()
         old = info['content']
-        user_overlay = None
-        if ensure_eeprom:
-            status = self.action_status(cfg, 'enable_i2c1_eeprom')
-            if not status['enabled']:
-                raise ValueError(status['reason'])
+        if eeprom_overlay is not None:
+            candidates = self.eeprom_overlay_candidates(cfg.platform, info)
+            if eeprom_overlay not in {candidate['name'] for candidate in candidates}:
+                raise ValueError('Selected standard EEPROM overlay not found; configure user_overlays manually if needed')
             p = self.catalog.get(cfg.platform)
-            user_overlay = p['user_overlays']['eeprom']
             variants = [p['overlays']['i2c1']] + [p['overlays'][f'rtc_{rtc}'] for rtc in RTC_CHOICES[1:] if f'rtc_{rtc}' in p['overlays']]
-            names = old_names = info['values'].get('overlays', '').split()
+            names = info['values'].get('overlays', '').split()
             expected = set(variants) if info['overlay_prefix'] else {cfg.platform + '-' + v for v in variants}
-            if not any(name in expected for name in old_names):
+            if not any(name in expected for name in names):
                 chosen = resolve_overlay(variants[0], cfg.platform, info['overlay_prefix'], info['overlay_files'])
-                names = [chosen] + old_names
+                names = [chosen] + names
+            names = list(dict.fromkeys(names + [eeprom_overlay]))
         else:
             names = self.overlays(cfg)['overlays']
-        new = patch_boot(old, names, user_overlay)
+            # Keep explicitly configured standard EEPROM support when its bus is enabled.
+            if 'i2c1' in cfg.enabled:
+                names = list(dict.fromkeys(names + [name for name in info['values'].get('overlays', '').split()
+                                                    if self.is_eeprom_overlay(name)]))
+        new = patch_boot(old, names)
         return {'target': info['path'], 'before': old, 'after': new,
                 'overlay_prefix': info['overlay_prefix'], 'changed': old != new,
                 'current_overlay_string': 'overlays=' + info['values'].get('overlays', ''),
                 'proposed_overlay_string': 'overlays=' + ' '.join(names),
                 'current_user_overlay_string': 'user_overlays=' + info['values'].get('user_overlays', ''),
                 'proposed_user_overlay_string': 'user_overlays=' + boot_values(new).get('user_overlays', ''),
-                'warnings': self.overlay_warnings(names, info), 'eeprom_overlay': user_overlay}
+                'warnings': self.overlay_warnings(names, info), 'eeprom_overlay': eeprom_overlay}
 
     def apply_boot_plan(self, plan, confirmed=False):
         require_confirmation(confirmed)
@@ -277,8 +311,11 @@ class BoardService:
         values = boot_values(plan['after'])
         if values.get('overlay_prefix', '') != info['overlay_prefix']:
             raise ValueError('Boot overlay prefix changed since preview')
-        if plan.get('eeprom_overlay') and plan['eeprom_overlay'] not in info['user_overlay_files']:
-            raise ValueError(f"{plan['eeprom_overlay']}.dtbo not found")
+        if plan.get('eeprom_overlay'):
+            name = plan['eeprom_overlay']
+            full = info['overlay_prefix'] + '-' + name if info['overlay_prefix'] else name
+            if full not in info['overlay_files']:
+                raise ValueError(f'{full}.dtbo not found')
         if not plan['changed']:
             return None
         return self.boot.write(plan['target'], plan['after'])

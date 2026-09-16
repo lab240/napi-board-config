@@ -37,7 +37,7 @@ class CoreTests(unittest.TestCase):
         import struct, zlib
         header = struct.pack('<4sBBIHIIBBBB32s', b'NAPI', 2, 1, 0, 1, 1 << 10, 0, 0, 0, 0, 0, b'NAPI Board')
         body = header + bytes(48)
-        self.assertEqual(encode_config(BoardConfig(), self.service.catalog), body + struct.pack('<I', zlib.crc32(body)))
+        self.assertEqual(encode_config(BoardConfig(enabled={'i2c1'}), self.service.catalog), body + struct.pack('<I', zlib.crc32(body)))
 
     def test_confirmation_prevents_writes(self):
         self.service.eeprom = Mock()
@@ -95,7 +95,17 @@ class CoreTests(unittest.TestCase):
         cfg = self.service.toggle_interface(BoardConfig(), 'w5500_spi1')
         with self.assertRaises(ValueError):
             self.service.toggle_interface(cfg, 'spi1')
-        with self.assertRaises(ValueError):
+        cfg = self.service.toggle_interface(cfg, 'i2c1')
+        self.assertIn('i2c1', cfg.enabled)
+        cfg = self.service.toggle_interface(cfg, 'i2c1')
+        self.assertNotIn('i2c1', cfg.enabled)
+        self.assertEqual(decode_config(encode_config(cfg, self.service.catalog), self.service.catalog), cfg)
+        profile = config_to_profile(cfg)
+        self.assertFalse(profile['i2c']['i2c1']['enabled'])
+        self.assertNotIn('eeprom', profile['i2c']['i2c1'])
+        cfg = self.service.toggle_rtc(cfg)
+        self.assertIn('i2c1', cfg.enabled)
+        with self.assertRaisesRegex(ValueError, 'RTC'):
             self.service.toggle_interface(cfg, 'i2c1')
 
     def test_boot_preview_and_stale_plan(self):
@@ -103,7 +113,7 @@ class CoreTests(unittest.TestCase):
         self.service.boot.detect.return_value = '/boot/armbianEnv.txt'
         self.service.boot.inventory.return_value = {'overlay_files': {'rk3308-i2c1': '/fake.dtbo'}, 'user_overlay_files': {'custom': '/fake.dtbo'}}
         self.service.boot.read.return_value = 'overlay_prefix=rk3308\nother=keep\noverlays=old\nuser_overlays=custom\n'
-        plan = self.service.boot_plan(BoardConfig())
+        plan = self.service.boot_plan(BoardConfig(enabled={'i2c1'}))
         self.assertIn('other=keep', plan['after'])
         self.assertIn('user_overlays=custom', plan['after'])
         self.assertIn('overlays=i2c1', plan['after'])

@@ -1,7 +1,7 @@
 from .models import BoardConfig, IF_BY_KEY, RTC_CHOICES, INTERFACES
 
 def profile_to_config(b):
-    enabled = {"i2c1"}
+    enabled = set()
 
     interfaces = b.get("interfaces", {})
     if isinstance(interfaces, dict):
@@ -28,7 +28,8 @@ def profile_to_config(b):
         rtc = "none"
 
     enabled.discard("rtc")
-    enabled.add("i2c1")
+    if rtc != 'none':
+        enabled.add('i2c1')
     return BoardConfig(
         platform=str(b.get("platform", "rk3308")),
         product_id=int(b.get("id", 0)),
@@ -61,8 +62,7 @@ def config_to_profile(cfg: BoardConfig):
         "i2c": {
             "i2c0": {"enabled": "i2c0" in cfg.enabled},
             "i2c1": {
-                "enabled": True,
-                "eeprom": True,
+                "enabled": "i2c1" in cfg.enabled,
                 "rtc": cfg.rtc_i2c1,
             },
             "i2c3": {"enabled": "i2c3" in cfg.enabled},

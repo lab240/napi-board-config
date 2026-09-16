@@ -14,8 +14,8 @@ def validate_configuration(cfg, catalog):
     unknown = cfg.enabled - IF_BY_KEY.keys()
     if unknown:
         errors.append(f'Unknown interfaces: {sorted(unknown)}')
-    if 'i2c1' not in cfg.enabled:
-        errors.append('I2C1 is required for EEPROM')
+    if cfg.rtc_i2c1 != 'none' and 'i2c1' not in cfg.enabled:
+        errors.append('I2C1 must be enabled when RTC is enabled')
     if len(cfg.board_name.encode('utf-8')) > NAME_LEN:
         errors.append(f'Board name exceeds {NAME_LEN} UTF-8 bytes')
     try:
@@ -54,7 +54,7 @@ def from_document(data):
             raise ValueError(f'{key} must be a string')
     if isinstance(data.get('enabled'), str) or not isinstance(data.get('enabled', []), list):
         raise ValueError('enabled must be a list')
-    enabled = data.get('enabled', ['i2c1'])
+    enabled = data.get('enabled', [])
     if any(not isinstance(value, str) for value in enabled):
         raise ValueError('enabled must contain interface names')
     macs = data.get('macs', [])
@@ -69,9 +69,11 @@ def updated(cfg, key, value, catalog):
     candidate = replace(cfg, enabled=set(cfg.enabled), macs=list(cfg.macs))
     if key == 'platform':
         catalog.get(value)
-        candidate.enabled = {'i2c1'}
+        candidate.enabled = set()
         candidate.rtc_i2c1 = 'none'
     setattr(candidate, key, value)
+    if key == 'rtc_i2c1' and value != 'none':
+        candidate.enabled.add('i2c1')
     validate_configuration(candidate, catalog)
     return candidate
 

@@ -168,7 +168,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v17 "
+        title = " NAPI Board Config v18 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -382,19 +382,55 @@ class UI:
 
     def enable_i2c1_eeprom(self):
         def operation():
-            plan = self.service.boot_plan(self.cfg, ensure_eeprom=True)
-            if not plan['changed']:
-                self.status = 'EEPROM overlay already configured'
+            setup = self.service.eeprom_setup(self.cfg.platform)
+            if setup['available'] or not setup['candidates']:
+                self.view_text(setup['message'])
                 return False
-            self.preview_boot(plan)
-            if not self.confirm_yes('Add EEPROM overlay and reboot? Boot configuration will be changed.'):
+            candidate = self.choose_eeprom_overlay(setup['candidates'])
+            if candidate is None:
+                self.status = 'EEPROM setup cancelled'
+                return False
+            plan = self.service.boot_plan(self.cfg, eeprom_overlay=candidate['name'])
+            if not plan['changed']:
+                self.view_text('Overlay already configured. Check chip, bus and address. Reboot manually if changes are pending.')
+                return False
+            if not self.preview_boot(plan, offer_write=True):
+                self.status = 'View only; boot file unchanged'
+                return False
+            if not self.confirm_yes(f"Enable {candidate['name']} and REBOOT? Confirm chip, bus and address match."):
                 self.status = 'Cancelled'
                 return False
             self.service.apply_boot_plan(plan, confirmed=True)
             self.service.reboot(confirmed=True)
         self.perform(operation)
 
-
+    def choose_eeprom_overlay(self, candidates):
+        position = 0
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            self.stdscr.erase()
+            visible = max(1, h-4)
+            top = max(0, position-visible+1)
+            try:
+                self.stdscr.addnstr(0, 0, 'EEPROM overlay candidates: verify chip/bus/address', max(1, w-1), curses.A_BOLD)
+                for row, candidate in enumerate(candidates[top:top+visible], 2):
+                    attr = curses.A_REVERSE if top+row-2 == position else curses.A_NORMAL
+                    self.stdscr.addnstr(row, 1, candidate['file'], max(1, w-2), attr)
+                self.stdscr.addnstr(h-1, 0, 'Up/Down  Enter select  q/Esc cancel', max(1, w-1))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            ch = self.stdscr.getch()
+            if ch == 3:
+                raise KeyboardInterrupt
+            if ch in (27, ord('q'), ord('Q')):
+                return None
+            if ch in (10, 13, curses.KEY_ENTER):
+                return candidates[position]
+            if ch in (curses.KEY_DOWN, ord('j')):
+                position = (position+1) % len(candidates)
+            elif ch in (curses.KEY_UP, ord('k')):
+                position = (position-1) % len(candidates)
 
     def edit_instance(self, key):
         if key == 'mac_count':

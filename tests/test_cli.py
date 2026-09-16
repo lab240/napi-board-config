@@ -63,6 +63,39 @@ class CliTests(unittest.TestCase):
             self.assertEqual(Path(result['backup']).read_text(), original)
             self.assertEqual(env.read_text(), json.loads(preview.stdout)['after'])
 
+    def test_optional_eeprom_setup_cli_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            boot = Path(directory)
+            stock = boot / 'dtb/rockchip/overlay'
+            stock.mkdir(parents=True)
+            user = boot / 'overlay-user'
+            user.mkdir()
+            (user / 'rk3308-eeprom24.dtbo').touch()
+            env = boot / 'armbianEnv.txt'
+            original = 'overlay_prefix=rk3308\noverlays=otg-host\nuser_overlays=arbitrary  name  \n'
+            env.write_text(original)
+            common = ['--boot-dir', str(boot), '--eeprom', str(boot / 'missing'), '--json']
+            result = self.run_cli('eeprom', 'overlays', *common)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['candidates'], [])
+            for name in ['rk3308-eeprom24', 'rk3308-i2c1']:
+                (stock / (name + '.dtbo')).touch()
+            result = self.run_cli('eeprom', 'overlays', *common)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['candidates'][0]['name'], 'eeprom24')
+            denied = self.run_cli('eeprom', 'enable', '--overlay', 'eeprom24', *common)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertEqual(env.read_text(), original)
+            self.assertEqual(list(boot.glob('*.bak-*')), [])
+            result = self.run_cli('eeprom', 'enable', '--overlay', 'eeprom24', '--yes', *common)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertFalse(data['reboot'])
+            self.assertEqual(Path(data['backup']).read_text(), original)
+            self.assertIn('overlays=i2c1 otg-host eeprom24\n', env.read_text())
+            self.assertIn('user_overlays=arbitrary  name  \n', env.read_text())
+            self.assertEqual(list(user.iterdir()), [user / 'rk3308-eeprom24.dtbo'])
+
     def test_invalid_eeprom_has_error_and_no_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bad'

@@ -16,7 +16,7 @@ class InterfaceDef:
 
 INTERFACES = [
     InterfaceDef("i2c0", "I2C0", 9),
-    InterfaceDef("i2c1", "I2C1 (EEPROM, required)", 10),
+    InterfaceDef("i2c1", "I2C1", 10),
     InterfaceDef("i2c3", "I2C3", 11),
     InterfaceDef("usb_host", "USB Host", 1),
     InterfaceDef("spi1", "SPI1", 2),
@@ -48,7 +48,7 @@ class BoardConfig:
     product_rev: int = 1
     board_name: str = "NAPI Board"
     comment: str = ""
-    enabled: set[str] = field(default_factory=lambda: {"i2c1"})
+    enabled: set[str] = field(default_factory=set)
     rtc_i2c1: str = "none"
     serial_number: int = 0
     mfg_date: str = ""
@@ -56,7 +56,6 @@ class BoardConfig:
 
     def mask(self) -> int:
         enabled = set(self.enabled)
-        enabled.add("i2c1")  # EEPROM bus is mandatory.
         m = 0
         for key in enabled:
             if key in IF_BY_KEY:
@@ -68,7 +67,6 @@ class BoardConfig:
     @classmethod
     def from_mask(cls, product_id, product_rev, board_name, mask):
         enabled = {i.key for i in INTERFACES if mask & (1 << i.bit)}
-        enabled.add("i2c1")
 
         rtc = "none"
         for name, bit in RTC_BITS.items():

@@ -11,7 +11,7 @@ class LinuxEeprom:
 
     def availability(self, write=False):
         if not self.path.exists():
-            return {'enabled': False, 'reason': f'EEPROM device not found: {self.path}'}
+            return {'enabled': False, 'reason': f'EEPROM unavailable / not configured: {self.path}'}
         mode = os.R_OK | (os.W_OK if write else 0)
         if not os.access(self.path, mode):
             return {'enabled': False, 'reason': f'EEPROM access denied: {self.path}'}

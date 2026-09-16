@@ -74,12 +74,11 @@ def overlays_for(cfg: BoardConfig, catalog):
     mapping = p.get("overlays", {})
     prefix = str(p.get("overlay_prefix", "")).strip()
     enabled = set(cfg.enabled)
-    enabled.add("i2c1")
 
     rtc_key = "i2c1" if cfg.rtc_i2c1 == "none" else f"rtc_{cfg.rtc_i2c1}"
     overlays = []
     rtc_overlay = mapping.get(rtc_key)
-    if rtc_overlay:
+    if rtc_overlay and "i2c1" in enabled:
         overlays.append(str(rtc_overlay))
     enabled.discard("i2c1")
 
@@ -97,8 +96,3 @@ def overlays_for(cfg: BoardConfig, catalog):
         pref = prefix + "-"
         overlays = [x[len(pref):] if x.startswith(pref) else x for x in overlays]
     return list(dict.fromkeys(overlays))
-
-def user_overlay_name(cfg: BoardConfig, key, catalog):
-    p = catalog.get(cfg.platform)
-    value = p.get("user_overlays", {}).get(key)
-    return str(value) if value else None

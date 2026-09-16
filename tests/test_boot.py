@@ -63,7 +63,7 @@ class BootTests(unittest.TestCase):
     def test_missing_overlay_warns_and_can_be_written_after_confirmation(self):
         path = self.env('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\nuser_overlays=custom-any-name  another-name  \n')
         original = path.read_text()
-        plan = self.service.boot_plan(BoardConfig())
+        plan = self.service.boot_plan(BoardConfig(enabled={'i2c1'}))
         self.assertIn('rk3308-i2c1.dtbo', plan['warnings'][0])
         self.assertEqual(plan['proposed_overlay_string'], 'overlays=i2c1')
         self.assertEqual(plan['current_user_overlay_string'], 'user_overlays=custom-any-name  another-name')
@@ -109,7 +109,7 @@ class BootTests(unittest.TestCase):
         self.assertIn('CRC mismatch', ui.status)
         self.eeprom.unlink()
         ui = UI(Mock(), self.service)
-        self.assertIn('EEPROM device not found', ui.status)
+        self.assertIn('EEPROM unavailable / not configured', ui.status)
 
     def test_both_env_files_and_deployed_script(self):
         self.env('overlay_prefix=rk3308\n')
@@ -127,41 +127,78 @@ class BootTests(unittest.TestCase):
         (active / 'rk3308-i2c1.dtbo').touch()
         self.files('rk3308-usb20-host')
         (self.root / 'boot.scr').write_text('for overlay_file in ${overlays}; do\nload mmc 0:1 ${addr} ${prefix}actual-overlays/${overlay_prefix}-${overlay_file}.dtbo;\ndone\n')
-        self.assertEqual(self.service.overlays(BoardConfig())['overlays'], ['i2c1'])
+        self.assertEqual(self.service.overlays(BoardConfig(enabled={'i2c1'}))['overlays'], ['i2c1'])
         info = self.service.overlays(BoardConfig(enabled={'i2c1', 'usb_host'}))
         self.assertIn('rk3308-usb20-host.dtbo', info['warnings'][0])
 
-    def test_eeprom_in_base_dtb_does_not_require_overlay_file(self):
+    def test_eeprom_in_base_dtb_and_standard_only_candidates(self):
         self.env('overlay_prefix=rk3308\n')
         self.assertTrue(self.service.action_status(BoardConfig(), 'read')['enabled'])
         self.assertTrue(self.service.action_status(BoardConfig(), 'write_eeprom')['enabled'])
-        status = self.service.action_status(BoardConfig(), 'enable_i2c1_eeprom')
-        self.assertFalse(status['enabled'])
-        self.assertIn('rk3308-i2c1-eeprom.dtbo not found', status['reason'])
+        self.assertTrue(self.service.eeprom_setup('rk3308')['available'])
+        self.assertIn('additional overlay is not required', self.service.eeprom_setup('rk3308')['message'])
         self.eeprom.unlink()
         self.assertFalse(self.service.action_status(BoardConfig(), 'read')['enabled'])
-        with self.assertRaisesRegex(ValueError, 'EEPROM device not found'):
+        with self.assertRaisesRegex(ValueError, 'EEPROM unavailable / not configured'):
             self.service.read_eeprom()
         (self.user / 'rk3308-i2c1-eeprom.dtbo').touch()
+        self.assertEqual(self.service.eeprom_setup('rk3308')['candidates'], [])
+        status = self.service.action_status(BoardConfig(), 'enable_i2c1_eeprom')
+        self.assertFalse(status['enabled'])
+        self.assertIn('No standard EEPROM overlay found', status['reason'])
+        self.files('rk3308-eeprom24', 'rk3568-eeprom24')
+        candidates = self.service.eeprom_setup('rk3308')['candidates']
+        self.assertEqual([c['name'] for c in candidates], ['eeprom24'])
         self.assertTrue(self.service.action_status(BoardConfig(), 'enable_i2c1_eeprom')['enabled'])
 
-    def test_eeprom_service_confirmation_and_full_user_name(self):
-        self.env('overlay_prefix=napi-rk3308\n')
-        self.files('napi-rk3308-i2c1')
-        (self.user / 'rk3308-i2c1-eeprom.dtbo').touch()
-        plan = self.service.boot_plan(BoardConfig(), ensure_eeprom=True)
-        self.assertIn('user_overlays=rk3308-i2c1-eeprom', plan['after'])
+    def test_eeprom_service_preview_and_confirmation_cancellation(self):
+        path = self.env('overlay_prefix=napi-rk3308\noverlays=otg-host\nuser_overlays=arbitrary  name  \n')
+        self.eeprom.unlink()
+        self.files('napi-rk3308-i2c1', 'napi-rk3308-eeprom24')
+        plan = self.service.boot_plan(BoardConfig(), eeprom_overlay='eeprom24')
+        self.assertIn('overlays=i2c1 otg-host eeprom24\n', plan['after'])
+        self.assertIn('user_overlays=arbitrary  name  \n', plan['after'])
+        self.assertEqual(path.read_text(), plan['before'])
         ui = UI.__new__(UI)
         ui.service = self.service
         ui.cfg = BoardConfig()
-        ui.preview_boot = Mock()
+        ui.choose_eeprom_overlay = Mock(return_value={'name': 'eeprom24'})
+        ui.preview_boot = Mock(return_value=False)
         ui.confirm_yes = Mock(return_value=False)
         self.service.apply_boot_plan = Mock()
         self.service.reboot = Mock()
         ui.enable_i2c1_eeprom()
+        ui.confirm_yes.assert_not_called()
+        ui.preview_boot.return_value = True
+        ui.enable_i2c1_eeprom()
         ui.confirm_yes.assert_called_once()
         self.service.apply_boot_plan.assert_not_called()
         self.service.reboot.assert_not_called()
+
+    def test_optional_eeprom_and_independent_i2c1(self):
+        self.env('overlay_prefix=rk3308\noverlays=\nuser_overlays=custom\n')
+        self.files('rk3308-i2c1', 'rk3308-eeprom24')
+        self.assertEqual(self.service.overlays(BoardConfig())['overlays'], [])
+        plan = self.service.boot_plan(BoardConfig(enabled={'i2c1'}))
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=i2c1')
+        self.assertNotIn('eeprom24', plan['after'])
+        self.assertEqual(plan['proposed_user_overlay_string'], 'user_overlays=custom')
+        with self.assertRaisesRegex(ValueError, 'standard EEPROM overlay not found'):
+            self.service.boot_plan(BoardConfig(), eeprom_overlay='custom')
+
+    def test_napilinux_eeprom_full_name_and_preservation(self):
+        path = self.env('overlays=rk3308-i2c1-ds1338 rk3308-usb20-host\nuser_overlays=anything\n', 'uEnv.txt')
+        self.files('rk3308-eeprom24')
+        plan = self.service.boot_plan(BoardConfig(), eeprom_overlay='rk3308-eeprom24')
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=rk3308-i2c1-ds1338 rk3308-usb20-host rk3308-eeprom24')
+        backup = self.service.apply_boot_plan(plan, confirmed=True)
+        self.assertEqual(Path(backup).read_text(), plan['before'])
+        cfg = BoardConfig(enabled={'i2c1'}, rtc_i2c1='ds1338')
+        self.assertIn('rk3308-eeprom24', self.service.boot_plan(cfg)['proposed_overlay_string'])
+        (self.stock / 'rk3308-eeprom24.dtbo').unlink()
+        path.write_text(plan['before'])
+        with self.assertRaisesRegex(ValueError, 'dtbo not found'):
+            self.service.apply_boot_plan(plan, confirmed=True)
 
     def test_disabled_action_remains_visible_and_explains_reason(self):
         self.env('overlay_prefix=rk3308\n')
@@ -175,4 +212,4 @@ class BootTests(unittest.TestCase):
         ui.view_text = Mock()
         self.assertIn('disabled', ui.action_label('read'))
         self.assertFalse(ui.activate())
-        self.assertIn('EEPROM device not found', ui.view_text.call_args.args[0])
+        self.assertIn('EEPROM unavailable / not configured', ui.view_text.call_args.args[0])
