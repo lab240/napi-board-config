@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from napi_config.cli.app import main
+
+raise SystemExit(main())
