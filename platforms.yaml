@@ -1,0 +1,27 @@
+version: 1
+platforms:
+  rk3308:
+    id: 1
+    overlay_prefix: rk3308
+    overlays:
+      i2c1: i2c1
+      i2c3: i2c3-m0
+      usb_host: usb20-host
+      uart1: uart1
+      uart2: uart2-m0
+      uart4: uart4
+      w5500_spi1: spi1-w5500
+      w5500_spi2: spi2-w5500
+      rtc_ds1307: i2c1-ds1307
+      rtc_ds1338: i2c1-ds1338
+      rtc_ds3231: i2c1-ds3231
+    user_overlays:
+      eeprom: rk3308-i2c1-eeprom
+    conflicts:
+      spi1: [w5500_spi1, uart3]
+      spi2: [w5500_spi2, uart1, uart2]
+      uart1: [spi2, w5500_spi2]
+      uart2: [spi2, w5500_spi2]
+      uart3: [spi1, w5500_spi1]
+      w5500_spi1: [spi1, uart3]
+      w5500_spi2: [spi2, uart1, uart2]

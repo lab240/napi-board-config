@@ -1,0 +1,31 @@
+version: 2
+
+boards:
+  - id: 6
+    rev: 1
+    slug: fcu3308
+    name: FCU3308
+    platform: rk3308
+
+    interfaces:
+      usb_host: true
+      spi1: false
+      spi2: false
+      uart1: true
+      uart2: true
+      uart3: false
+      uart4: true
+      w5500_spi1: true
+      w5500_spi2: false
+
+    i2c:
+      i2c0:
+        enabled: false
+
+      i2c1:
+        enabled: true
+        eeprom: true
+        rtc: ds1338
+
+      i2c3:
+        enabled: true
