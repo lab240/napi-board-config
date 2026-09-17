@@ -1,5 +1,12 @@
 # Repository Guidelines
 
+## Saved Project Context
+
+Read `MEMORY.md` before continuing work. It records the v18 architecture,
+agreed EEPROM/overlay behavior, deployment, validation and pending hardware checks.
+Some legacy structure/testing notes below predate the refactor; use the current
+code, `README.md` and `ARCHITECTURE.md` for the actual project layout and test runner.
+
 ## Project Structure & Module Organization
 
 This repository contains a standalone Python terminal utility for configuring NAPI boards under Armbian/U-Boot.
