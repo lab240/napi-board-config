@@ -621,25 +621,26 @@ class UI:
             if w >= 80:
                 label_width = min(28, max(len(row['field']) for row in comparison['rows']) + 2)
                 value_width = max(1, (width - label_width - 6) // 2)
-                current_x = 1 + label_width + 2
-                proposed_x = current_x + value_width + 2
-                lines.append([(1, 'Field', curses.A_BOLD), (current_x, 'Current EEPROM', curses.A_BOLD),
-                              (proposed_x, 'Proposed EEPROM', curses.A_BOLD)])
+                proposed_x = 1 + label_width + 2
+                current_x = proposed_x + value_width + 2
+                lines.append([(1, 'Field', curses.A_BOLD), (proposed_x, 'Proposed EEPROM', curses.A_BOLD),
+                              (current_x, 'Current EEPROM', curses.A_BOLD)])
                 lines.append([(1, '-' * width, curses.A_DIM)])
                 for row in comparison['rows']:
                     label = ('* ' if row['changed'] else '  ') + row['field']
-                    cells = [wrap(label, label_width), wrap(row['current'], value_width),
-                             wrap(row['proposed'], value_width)]
+                    cells = [wrap(label, label_width), wrap(row['proposed'], value_width),
+                             wrap(row['current'], value_width)]
                     for index in range(max(map(len, cells))):
                         segments = []
-                        for cell, x, attr in zip(cells, (1, current_x, proposed_x),
-                                                 (curses.A_NORMAL, curses.A_NORMAL,
-                                                  changed_attr if row['changed'] else curses.A_NORMAL)):
+                        for cell, x, attr in zip(cells, (1, proposed_x, current_x),
+                                                 (curses.A_NORMAL,
+                                                  changed_attr if row['changed'] else curses.A_NORMAL,
+                                                  curses.A_NORMAL)):
                             if index < len(cell):
                                 segments.append((x, cell[index], attr))
                         lines.append(segments)
             else:
-                for heading, key in [('Current EEPROM:', 'current'), ('Proposed EEPROM:', 'proposed')]:
+                for heading, key in [('Proposed EEPROM:', 'proposed'), ('Current EEPROM:', 'current')]:
                     add_text(heading, curses.A_BOLD)
                     for row in comparison['rows']:
                         changed = key == 'proposed' and row['changed']
