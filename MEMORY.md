@@ -332,3 +332,31 @@ Boot SHA256 остался `063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7
   сохранены. Для v2/пустой EEPROM показывает OTP и инструкции инициализировать v3.
 - CLI: eeprom reset --preview/--yes; processor write --preview/--yes.
 - Номер программы остаётся v20, установка /root/v20; GitHub без нового push.
+
+## Согласованные правки меню v20 после reset
+
+Этот раздел заменяет прежнее описание очистки RAM draft при reset выше.
+
+- Reset обнуляет только физическую EEPROM, текущие поля в памяти сохраняются.
+  Статус процессора обновляется по EEPROM, не по сохранённому draft proc_id.
+- Строка Processor ID показывает текущий OTP + (not in EEPROM)/(in EEPROM)
+  или PROCESSOR MISMATCH со старым ID; OTP UNAVAILABLE при ошибке источника.
+- View and write processor ID перенесён в ACTIONS рядом с MAC, без дублирования
+  в SERVICE. Для пустых 256 байт zero/FF предлагает полный draft+OTP в v3,
+  preview всех полей → Enter → yes → backup → stale-проверка → read-back.
+  Для корректной v3 изменяется только proc_id, serial/MAC остаются прежними.
+  Повреждённая непустая EEPROM не перезаписывается автоматически этим пунктом.
+- Обычный Write EEPROM после reset записывает v3, сохраняя значения draft v2.
+  После успешной записи RAM формат обновляется, комментарий сохраняется в памяти.
+- CLI processor write --config instance.json задаёт draft для пустой EEPROM;
+  без JSON defaults. Подтверждение --yes, --preview ничего не пишет.
+- Единый View and write boot config вместо отдельных overlay string/current boot.
+  Полные файлы, новый первым, warnings отдельно, Enter → yes → backup/read-back,
+  без reboot. Пользовательские overlays не сканировать и user_overlays не менять.
+- Вверх на первом пункте → последний, вниз на последнем → первый в обеих ширинах.
+- Галочку EEPROM пока не добавляли: обсуждалась как вопрос, не согласованная правка.
+- 79 тестов прошли локально; предыдущая установка сохранена на плате в
+  /root/v20-before-menu-6a59dee. На начало проверки EEPROM уже пустая после
+  пользовательского reset: SHA256 5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1.
+  Boot SHA256 прежний 063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7aaa386c33015.
+  Во время проверки реальные EEPROM/boot записи и reboot не выполнять.

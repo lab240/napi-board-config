@@ -48,6 +48,16 @@ class BootTests(unittest.TestCase):
         self.assertEqual(Path(backup).read_text(), plan['before'])
         self.assertEqual(path.read_text(), plan['after'])
 
+    def test_boot_comparison_contains_full_files_and_excludes_warnings(self):
+        self.env('verbosity=7\noverlay_prefix=rk3308\nuser_overlays=arbitrary\nextraargs=keep\n')
+        plan = self.service.boot_plan(BoardConfig(enabled={'i2c1'}))
+        comparison = self.service.boot_comparison(plan)
+        self.assertEqual([row['proposed'] for row in comparison['rows']], plan['after'].splitlines())
+        self.assertEqual([row['current'] for row in comparison['rows'][:4]], plan['before'].splitlines())
+        self.assertEqual(comparison['proposed_label'], 'Proposed boot file')
+        self.assertTrue(plan['warnings'])
+        self.assertNotIn('Warning', '\n'.join(row['proposed'] for row in comparison['rows']))
+
     def test_napilinux_full_names_and_comment_preservation(self):
         self.env('fdtfile=rk3308-napi-c.dtb\n#overlays=rk3308-uart1\nverbosity=7\n', 'uEnv.txt')
         directory = self.root / 'dtb/overlay'
@@ -85,14 +95,14 @@ class BootTests(unittest.TestCase):
         ui = UI.__new__(UI)
         ui.service = self.service
         ui.cfg = BoardConfig()
-        ui.preview_boot = Mock(return_value=False)
+        ui.view_comparison = Mock(return_value=False)
         ui.confirm_yes = Mock(return_value=False)
         self.service.apply_boot_plan = Mock()
         ui.write_env()
-        ui.preview_boot.assert_called_once()
+        ui.view_comparison.assert_called_once()
         ui.confirm_yes.assert_not_called()
         self.service.apply_boot_plan.assert_not_called()
-        ui.preview_boot.return_value = True
+        ui.view_comparison.return_value = True
         ui.write_env()
         ui.confirm_yes.assert_called_once()
         self.service.apply_boot_plan.assert_not_called()

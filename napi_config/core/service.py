@@ -63,8 +63,9 @@ class BoardService:
         require_confirmation(confirmed)
         self.require_eeprom(write=True)
         self.validate(cfg)
-        encoded = encode_config(cfg, self.catalog)
         existing = self.eeprom.read()
+        cfg = self.eeprom_write_configuration(cfg, existing)
+        encoded = encode_config(cfg, self.catalog)
         try:
             stored = decode_config(existing, self.catalog)
         except ValueError:
@@ -83,6 +84,16 @@ class BoardService:
             raise OSError('EEPROM read-back mismatch')
         decode_config(actual, self.catalog)
         return True
+
+    def eeprom_write_configuration(self, cfg, image=None):
+        if image is None:
+            try:
+                image = self.eeprom.read()
+            except OSError:
+                return cfg
+        if len(image) == 256 and image in (bytes(256), b'\xff' * 256):
+            return replace(cfg, format_version=3)
+        return cfg
 
     def generate_macs(self, cfg, confirmed=False):
         require_confirmation(confirmed)
@@ -163,7 +174,7 @@ class BoardService:
         except ValueError as exc:
             current = {}
             error = 'No valid EEPROM configuration: ' + str(exc)
-        proposed = self.eeprom_fields(encode_config(cfg, self.catalog))
+        proposed = self.eeprom_fields(encode_config(self.eeprom_write_configuration(cfg), self.catalog))
         return self.configuration_comparison(current, proposed, 'FULL EEPROM CONFIGURATION WRITE',
                                             'Writes all EEPROM fields. Comment and boot settings are not stored in EEPROM.', error)
 
@@ -187,7 +198,7 @@ class BoardService:
         except ValueError as exc:
             existing = 'No valid EEPROM configuration: ' + str(exc)
         return ('FULL EEPROM CONFIGURATION WRITE\n\nCurrent EEPROM:\n' + existing
-                + '\n\nProposed EEPROM:\n' + '\n'.join(self.eeprom_rows(encode_config(cfg, self.catalog)))
+                + '\n\nProposed EEPROM:\n' + '\n'.join(self.eeprom_rows(encode_config(self.eeprom_write_configuration(cfg), self.catalog)))
                 + '\n\nWrites all EEPROM fields shown above. Comment and boot settings are not stored in EEPROM.')
 
     def mac_eeprom_plan(self, macs):
@@ -239,7 +250,11 @@ class BoardService:
         return True
 
     def processor_status(self, cfg=None):
-        cfg = cfg if cfg is not None else self.read_eeprom()
+        if cfg is None:
+            try:
+                cfg = self.read_eeprom()
+            except (ValueError, OSError):
+                cfg = self.defaults()
         self.validate(cfg)
         try:
             current = validate_otp(self.otp.read_id())
@@ -267,9 +282,20 @@ class BoardService:
         return self.instance_eeprom_plan(replace(cfg, format_version=3), 'MIGRATE EEPROM v2 TO v3',
                                          'Format and CRC layout change; processor remains NOT BOUND. Serial and MACs are preserved.')
 
-    def processor_write_plan(self):
+    def processor_write_plan(self, draft=None):
         self.require_eeprom()
         otp = validate_otp(self.otp.read_id())
+        image = self.eeprom.read()
+        if len(image) == 256 and (image == bytes(256) or image == b'\xff' * 256):
+            candidate = replace(draft if draft is not None else self.defaults(),
+                                format_version=3, proc_id_type=1, proc_id=otp)
+            self.validate(candidate)
+            after = encode_config(candidate, self.catalog)
+            comparison = self.configuration_comparison({}, self.eeprom_fields(after),
+                'INITIALIZE EEPROM AND WRITE PROCESSOR ID',
+                'EEPROM is empty. Writes the FULL displayed configuration and current OTP ID; reserved bytes are preserved.')
+            return {'kind': 'initialize', 'writable': True, 'changed': True,
+                    'before_image': image, 'after': after, 'otp_id': otp, 'comparison': comparison}
         try:
             cfg = self.read_eeprom()
             reason = '' if cfg.format_version == 3 else 'EEPROM is v2. Reset EEPROM and write a new v3 configuration first.'
@@ -287,6 +313,33 @@ class BoardService:
         if cfg.proc_id_type and cfg.proc_id != plan['otp_id']:
             plan['comparison']['note'] = 'PROCESSOR MISMATCH. Explicit confirmation binds the replacement SoC. Serial and stored MACs are preserved.'
         return plan
+
+    def apply_processor_write_plan(self, plan, confirmed=False):
+        if plan.get('kind') != 'initialize':
+            return self.apply_instance_eeprom_plan(plan, confirmed=confirmed)
+        require_confirmation(confirmed)
+        self.require_eeprom(write=True)
+        before = plan['before_image']
+        if len(before) != 256 or before not in (bytes(256), b'\xff' * 256):
+            raise ValueError('Processor initialization requires empty EEPROM')
+        if self.eeprom.read() != before:
+            raise ValueError('EEPROM changed since processor preview')
+        cfg = decode_config(plan['after'], self.catalog)
+        self.validate(cfg)
+        if cfg.format_version != 3 or cfg.proc_id_type != 1 or cfg.proc_id != plan['otp_id']:
+            raise ValueError('Invalid processor initialization plan')
+        if encode_config(cfg, self.catalog) != plan['after']:
+            raise ValueError('Invalid processor initialization bytes')
+        if validate_otp(self.otp.read_id()) != cfg.proc_id:
+            raise ValueError('Processor changed since binding preview')
+        self.last_eeprom_backup = self.configurations.backup_eeprom(before)
+        if self.eeprom.read() != before:
+            raise ValueError('EEPROM changed while creating backup')
+        self.eeprom.write(plan['after'])
+        expected = plan['after'] + before[len(plan['after']):]
+        if self.eeprom.read() != expected:
+            raise OSError('EEPROM initialization read-back mismatch')
+        return True
 
     def instance_eeprom_plan(self, candidate, title, note, otp=None, rebind=False):
         self.validate(candidate)
@@ -620,6 +673,15 @@ class BoardService:
                 'current_user_overlay_string': 'user_overlays=' + info['values'].get('user_overlays', ''),
                 'proposed_user_overlay_string': 'user_overlays=' + boot_values(new).get('user_overlays', ''),
                 'warnings': self.overlay_warnings(names, info), 'eeprom_overlay': eeprom_overlay}
+
+    def boot_comparison(self, plan):
+        before, after = plan['before'].splitlines(), plan['after'].splitlines()
+        proposed = [(f'Line {i + 1}', line) for i, line in enumerate(after)]
+        current = {f'Line {i + 1}': line for i, line in enumerate(before)}
+        comparison = self.configuration_comparison(current, proposed, 'VIEW AND WRITE BOOT CONFIG',
+            'Full file preview. Only overlays= is changed; other lines are preserved. No reboot.')
+        comparison.update(proposed_label='Proposed boot file', current_label='Current boot file')
+        return comparison
 
     def apply_boot_plan(self, plan, confirmed=False):
         require_confirmation(confirmed)

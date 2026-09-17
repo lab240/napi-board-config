@@ -34,6 +34,8 @@ def parser():
             if (group == 'processor' and name != 'status') or (group == 'eeprom' and name in ('migrate', 'reset')):
                 command.add_argument('--preview', action='store_true', help='Show proposed changes without writing')
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm EEPROM change')
+            if group == 'processor' and name == 'write':
+                command.add_argument('--config', help='Full instance JSON for initializing empty EEPROM; otherwise defaults')
             if group == 'mac' and name == 'generate':
                 command.add_argument('--output', help='Save generated instance configuration as JSON')
             if group == 'eeprom' and name in ('overlays', 'enable'):
@@ -54,13 +56,15 @@ def execute(args, service):
         if args.group == 'processor' and args.action == 'status':
             return service.processor_status()
         plan = ((service.reset_eeprom_plan() if args.action == 'reset' else service.migration_plan())
-                if args.group == 'eeprom' else service.processor_write_plan() if args.action == 'write'
+                if args.group == 'eeprom' else service.processor_write_plan(
+                    service.load_configuration(args.config) if args.config else None) if args.action == 'write'
                 else service.processor_plan(rebind=args.action == 'rebind'))
         if args.preview:
             return {'preview': plan['comparison'], 'changed': plan['changed'], 'writable': plan.get('writable', True)}
         if plan.get('writable') is False:
             raise ValueError(plan['reason'])
         written = (service.apply_reset_eeprom_plan(plan, confirmed=args.yes) if args.action == 'reset'
+                   else service.apply_processor_write_plan(plan, confirmed=args.yes) if args.action == 'write'
                    else service.apply_instance_eeprom_plan(plan, confirmed=args.yes))
         return {'written': written, 'verified': True,
                 'backup': getattr(service, 'last_eeprom_backup', None)}

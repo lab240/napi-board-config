@@ -165,7 +165,7 @@ class MacTests(unittest.TestCase):
         ui.last_mac_plan = self.service.mac_plan(cfg)
         ui.view_comparison = Mock(return_value=False)
         ui.confirm_yes = Mock(return_value=False)
-        with patch.object(self.service, 'write_eeprom') as write:
+        with patch.object(self.service, 'write_eeprom') as write, patch.object(self.service, 'read_eeprom', return_value=cfg):
             ui.write_eeprom()
             ui.confirm_yes.assert_not_called()
             write.assert_not_called()

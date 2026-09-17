@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 import unittest
+import curses
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -83,7 +84,9 @@ class ResetTests(unittest.TestCase):
         ui.confirm_yes.return_value = True
         ui.reset_eeprom()
         self.assertEqual(self.path.read_bytes(), bytes(256))
-        self.assertEqual(ui.cfg, self.service.defaults())
+        self.assertEqual(ui.cfg, self.cfg)
+        self.assertIn(self.otp.hex(), ui.config_text('instance', 'processor_binding'))
+        self.assertIn('not in EEPROM', ui.config_text('instance', 'processor_binding'))
         self.assertIn('EEPROM empty', ui.status)
 
 
@@ -102,4 +105,95 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.path.read_bytes(), bytes(256))
 
+    def test_processor_initialization_uses_draft_and_preserves_tail(self):
+        draft = replace(self.cfg, format_version=2, proc_id_type=0, proc_id=b'', comment='RAM only')
+        for empty in (bytes(256), b'\xff' * 256):
+            self.path.write_bytes(empty)
+            plan = self.service.processor_write_plan(draft)
+            self.assertEqual(plan['kind'], 'initialize')
+            self.assertIn('FULL', plan['comparison']['note'])
+            self.assertEqual(self.path.read_bytes(), empty)
+            with self.assertRaisesRegex(ValueError, 'confirmation'):
+                self.service.apply_processor_write_plan(plan)
+            self.service.apply_processor_write_plan(plan, confirmed=True)
+            expected = replace(self.cfg, comment='')
+            self.assertEqual(self.service.read_eeprom(), expected)
+            self.assertEqual(Path(self.service.last_eeprom_backup).read_bytes(), empty)
+            self.assertEqual(self.path.read_bytes()[126:], empty[126:])
+            self.assertEqual(draft.format_version, 2)
 
+    def test_processor_initialization_rejects_stale_otp_and_eeprom(self):
+        self.path.write_bytes(bytes(256))
+        plan = self.service.processor_write_plan(self.cfg)
+        self.otp_path.write_bytes(bytes(20) + bytes.fromhex('090b131d04'))
+        with self.assertRaisesRegex(ValueError, 'Processor changed'):
+            self.service.apply_processor_write_plan(plan, confirmed=True)
+        self.assertEqual(self.path.read_bytes(), bytes(256))
+        self.otp_path.write_bytes(bytes(20) + self.otp)
+        self.store(self.cfg)
+        with self.assertRaisesRegex(ValueError, 'changed since processor preview'):
+            self.service.apply_processor_write_plan(plan, confirmed=True)
+        self.path.write_bytes(bytes(256))
+        with patch.object(self.service.configurations, 'backup_eeprom', side_effect=OSError('backup failed')):
+            with self.assertRaisesRegex(OSError, 'backup failed'):
+                self.service.apply_processor_write_plan(plan, confirmed=True)
+        with patch.object(self.service.eeprom, 'write'):
+            with self.assertRaisesRegex(OSError, 'read-back mismatch'):
+                self.service.apply_processor_write_plan(plan, confirmed=True)
+
+    def test_corrupt_eeprom_is_not_automatically_initialized(self):
+        self.path.write_bytes(b'X' * 256)
+        plan = self.service.processor_write_plan(self.cfg)
+        self.assertFalse(plan['writable'])
+        self.assertEqual(self.path.read_bytes(), b'X' * 256)
+
+    def test_plain_write_reinitializes_preserved_v2_draft_as_v3(self):
+        draft = replace(self.cfg, format_version=2, proc_id_type=0, proc_id=b'')
+        self.path.write_bytes(bytes(256))
+        comparison = self.service.eeprom_comparison(draft)
+        self.assertEqual(comparison['rows'][0]['proposed'], '3')
+        self.service.write_eeprom(draft, confirmed=True)
+        self.assertEqual(self.service.read_eeprom(), replace(draft, format_version=3))
+
+    def test_navigation_wraps_at_menu_boundaries_and_processor_is_in_actions(self):
+        for width in (60, 120):
+            screen = Mock()
+            screen.getmaxyx.return_value = (40, width)
+            screen.getch.side_effect = [curses.KEY_UP, curses.KEY_DOWN, ord('q')]
+            ui = UI(screen, self.service)
+            positions = []
+            ui.draw = lambda: positions.append(ui.cursor)
+            with patch('napi_config.tui.app.curses.curs_set'):
+                ui.run()
+            self.assertEqual(positions, [0, len(ui.rows) - 1, 0])
+            self.assertIn(('action', 'write_processor'), ui.ACTIONS)
+            self.assertEqual(ui.rows.count(('action', 'write_processor')), 1)
+            self.assertNotIn(('action', 'view_boot'), ui.rows)
+
+    def test_tui_initialization_keeps_draft_on_cancel_and_writes_it_on_yes(self):
+        self.path.write_bytes(bytes(256))
+        ui = UI(Mock(), self.service)
+        ui.cfg = replace(self.cfg, proc_id_type=0, proc_id=b'', comment='keep comment')
+        draft = ui.cfg
+        ui.view_comparison = Mock(return_value=True)
+        ui.confirm_yes = Mock(return_value=False)
+        ui.change_instance('write')
+        self.assertEqual(ui.cfg, draft)
+        self.assertEqual(self.path.read_bytes(), bytes(256))
+        ui.confirm_yes.return_value = True
+        ui.change_instance('write')
+        self.assertEqual(ui.cfg, replace(self.cfg, comment='keep comment'))
+
+    def test_cli_initializes_processor_and_configuration_from_json(self):
+        self.path.write_bytes(bytes(256))
+        config = self.root / 'instance.json'
+        config.write_text(json.dumps(self.service.document(self.cfg)))
+        command = [sys.executable, '-B', '-m', 'napi_config', 'processor', 'write',
+                   '--eeprom', str(self.path), '--db', str(self.root / 'boards.yaml'),
+                   '--otp', str(self.otp_path), '--config', str(config), '--json']
+        preview = subprocess.run(command + ['--preview'], capture_output=True, text=True)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertTrue(json.loads(preview.stdout)['writable'])
+        done = subprocess.run(command + ['--yes'], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.service.read_eeprom(), self.cfg)

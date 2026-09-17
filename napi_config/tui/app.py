@@ -15,14 +15,14 @@ class UI:
         ("action", "github_db"),
         ("action", "view_macs"),
         ("action", "generate_macs"),
-        ("action", "view_boot"),
+        ("action", "write_processor"),
     ]
 
     def __init__(self, stdscr, service):
         self.stdscr = stdscr
         self.service = service
         self.cfg, initial_status = service.initial_configuration()
-        self.processor_info = service.processor_status(self.cfg)
+        self.processor_info = service.processor_status()
         self.action_states = {}
         self.boot_summary = "Not detected"
         self.blob = None
@@ -45,7 +45,6 @@ class UI:
             ("instance", "mac_count"),
             ("field", "env_target"),
             ("action", "enable_i2c1_eeprom"),
-            ("action", "write_processor"),
             ("action", "reset_eeprom"),
             ("action", "quit"),
         ]
@@ -72,7 +71,7 @@ class UI:
                     elif ch in (curses.KEY_RIGHT, ord("l")):
                         self.cursor = min(n-1, self.cursor + 1)
                     elif ch in (curses.KEY_UP, ord("k")):
-                        self.cursor = max(0, self.cursor - 2)
+                        self.cursor = len(self.rows) - 1 if self.cursor == 0 else max(0, self.cursor - 2)
                     else:
                         nxt = self.cursor + 2
                         self.cursor = nxt if nxt < n else min(n, len(self.rows)-1)
@@ -102,7 +101,7 @@ class UI:
             "load_defaults": "[ Load defaults ]",
             "read": "[ Load EEPROM ]",
             "write_eeprom": "[ Write EEPROM ]",
-            "write_env": "[ View and write overlay string ]",
+            "write_env": "[ View and write boot config ]",
             "profile_load": "[ Load board from local DB ]",
             "profile_add": "[ Save board to local DB ]",
             "profile_delete": "[ Delete board from local DB ]",
@@ -141,7 +140,12 @@ class UI:
                 return f"    RTC type : {rtc}"
         if kind == "instance":
             if key == 'processor_binding':
-                return 'Processor    : ' + self.processor_info['state']
+                info = self.processor_info
+                if info['state'] == 'OTP UNAVAILABLE':
+                    return 'Processor ID : OTP UNAVAILABLE'
+                suffix = ('not in EEPROM' if info['state'] == 'NOT BOUND' else 'in EEPROM'
+                          if info['state'] == 'MATCH' else 'PROCESSOR MISMATCH; EEPROM: ' + info['stored_id'])
+                return 'Processor ID : ' + info['current_id'] + ' (' + suffix + ')'
             if key == "serial_number":
                 return f"Serial number: {self.cfg.serial_number:08d}"
             if key == "mfg_date":
@@ -543,7 +547,7 @@ class UI:
         saved = []
         def operation():
             plan = (self.service.migration_plan() if action == 'migrate'
-                    else self.service.processor_write_plan() if action == 'write'
+                    else self.service.processor_write_plan(self.cfg) if action == 'write'
                     else self.service.processor_plan(rebind=action == 'rebind'))
             if plan.get('writable') is False:
                 self.view_text(plan['comparison']['title'] + '\nCurrent OTP ID: '
@@ -551,17 +555,21 @@ class UI:
                 self.status = 'Processor ID viewed; EEPROM unchanged'
                 return False
             if not plan['changed']:
-                self.view_text('Processor binding already matches; no EEPROM write needed.')
+                self.view_text('Current OTP ID: ' + plan['otp_id'].hex()
+                               + '\nProcessor ID already matches EEPROM; no write needed.')
                 return False
             if not self.view_comparison(plan['comparison'], action_label=action):
                 self.status = 'View only; EEPROM unchanged'
                 return False
-            if not self.confirm_yes(plan['comparison']['title'] + '? EEPROM will be written; MACs and serial are preserved.'):
+            question = ('WRITE FULL displayed configuration and processor ID to empty EEPROM? Backup is saved first.'
+                        if plan.get('kind') == 'initialize' else
+                        plan['comparison']['title'] + '? EEPROM will be written; MACs and serial are preserved.')
+            if not self.confirm_yes(question):
                 self.status = 'EEPROM change cancelled'
                 return False
-            self.service.apply_instance_eeprom_plan(plan, confirmed=True)
+            self.service.apply_processor_write_plan(plan, confirmed=True)
             saved.append(self.service.last_eeprom_backup)
-            return self.service.read_eeprom()
+            return self.service.update(self.service.read_eeprom(), 'comment', self.cfg.comment)
         self.perform(operation, update=True)
         if saved:
             self.status = 'EEPROM verified; backup: ' + saved[0]
@@ -573,16 +581,16 @@ class UI:
             if not self.view_comparison(plan['comparison'], action_label='reset EEPROM'):
                 self.status = 'EEPROM reset cancelled'
                 return False
-            if not self.confirm_yes('RESET ALL EEPROM DATA and clear the in-memory configuration? Binary backup is saved first.'):
+            if not self.confirm_yes('RESET ALL 256 EEPROM BYTES? Current menu settings are preserved. Binary backup is saved first.'):
                 self.status = 'EEPROM reset cancelled'
                 return False
             self.service.apply_reset_eeprom_plan(plan, confirmed=True)
             completed.append(self.service.last_eeprom_backup)
-            self.last_mac_plan = None
-            return self.service.defaults()
-        self.perform(operation, update=True)
+            return False
+        self.perform(operation)
         if completed:
-            self.status = 'EEPROM empty; enter new values and use Write EEPROM.'
+            self.processor_info = self.service.processor_status()
+            self.status = 'EEPROM empty; current settings preserved. Use Write EEPROM.'
             if completed[0]:
                 self.status += ' Backup: ' + completed[0]
 
@@ -622,19 +630,25 @@ class UI:
             if not self.service.write_eeprom(self.cfg, confirmed=True):
                 self.status = 'EEPROM configuration already matches; no write performed'
                 return False
-        self.perform(operation)
+            return self.service.update(self.service.read_eeprom(), 'comment', self.cfg.comment)
+        self.perform(operation, update=True)
 
     def write_env(self):
         def operation():
             plan = self.service.boot_plan(self.cfg)
-            wants_write = self.preview_boot(plan, offer_write=plan['changed'])
+            comparison = self.service.boot_comparison(plan)
+            metadata = plan['target'] + '\nPrefix: ' + (plan['overlay_prefix'] or 'none')
+            if plan['warnings']:
+                metadata += '\n\nWARNINGS (not written):\n' + '\n'.join(plan['warnings'])
+            wants_write = self.view_comparison(comparison, metadata, action_label='write boot config',
+                                               offer_write=plan['changed'])
             if not plan['changed']:
                 self.status = 'Overlay settings already configured'
                 return False
             if not wants_write:
                 self.status = 'View only; boot file unchanged'
                 return False
-            if self.confirm_yes('Write overlay string? Backup will be created. No reboot.'):
+            if self.confirm_yes('Write proposed boot config? Backup will be created. No reboot.'):
                 self.service.apply_boot_plan(plan, confirmed=True)
             else:
                 self.status = 'Boot write cancelled'
@@ -642,10 +656,7 @@ class UI:
         self.perform(operation)
 
     def view_boot(self):
-        def operation():
-            info = self.service.boot_info()
-            self.view_text(info['path'] + '\nPrefix: ' + (info['overlay_prefix'] or 'none') + '\n\n' + info['content'])
-        self.perform(operation)
+        self.write_env()
 
     def preview_boot(self, plan, offer_write=False):
         # Presentation only; parsing and string generation belong to Core.
@@ -662,7 +673,7 @@ class UI:
                 + '\n' + plan['proposed_user_overlay_string'])
         return self.view_text(text, offer_write=offer_write)
 
-    def view_comparison(self, comparison, metadata='', action_label='write'):
+    def view_comparison(self, comparison, metadata='', action_label='write', offer_write=True):
         position = 0
         changed_attr = curses.A_BOLD
         try:
@@ -701,8 +712,8 @@ class UI:
                 value_width = max(1, (width - label_width - 6) // 2)
                 proposed_x = 1 + label_width + 2
                 current_x = proposed_x + value_width + 2
-                lines.append([(1, 'Field', curses.A_BOLD), (proposed_x, 'Proposed EEPROM', curses.A_BOLD),
-                              (current_x, 'Current EEPROM', curses.A_BOLD)])
+                lines.append([(1, 'Field', curses.A_BOLD), (proposed_x, comparison.get('proposed_label', 'Proposed EEPROM'), curses.A_BOLD),
+                              (current_x, comparison.get('current_label', 'Current EEPROM'), curses.A_BOLD)])
                 lines.append([(1, '-' * width, curses.A_DIM)])
                 for row in comparison['rows']:
                     label = ('* ' if row['changed'] else '  ') + row['field']
@@ -718,7 +729,8 @@ class UI:
                                 segments.append((x, cell[index], attr))
                         lines.append(segments)
             else:
-                for heading, key in [('Proposed EEPROM:', 'proposed'), ('Current EEPROM:', 'current')]:
+                for heading, key in [(comparison.get('proposed_label', 'Proposed EEPROM') + ':', 'proposed'),
+                                     (comparison.get('current_label', 'Current EEPROM') + ':', 'current')]:
                     add_text(heading, curses.A_BOLD)
                     for row in comparison['rows']:
                         changed = key == 'proposed' and row['changed']
@@ -736,7 +748,7 @@ class UI:
                     except curses.error:
                         pass
             try:
-                footer = 'Enter: confirm ' + action_label + '  q/Esc: cancel  PgUp/PgDn: scroll'
+                footer = ('Enter: confirm ' + action_label if offer_write else 'Enter: close') + '  q/Esc: cancel  PgUp/PgDn: scroll'
                 self.stdscr.addnstr(h-1, 0, footer, max(1, w-1), curses.A_DIM)
             except curses.error:
                 pass
@@ -747,7 +759,7 @@ class UI:
             if ch in (27, ord('q'), ord('Q')):
                 return False
             if ch in (10, 13, curses.KEY_ENTER):
-                return True
+                return offer_write
             if ch in (curses.KEY_DOWN, ord('j')):
                 position += 1
             elif ch in (curses.KEY_UP, ord('k')):
@@ -878,7 +890,7 @@ class UI:
                 return
             if update:
                 self.cfg = result
-                self.processor_info = self.service.processor_status(self.cfg)
+                self.processor_info = self.service.processor_status()
                 self.blob = None
             self.status = 'Operation completed'
         except (ValueError, TypeError, OSError, KeyError) as exc:
