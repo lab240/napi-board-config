@@ -488,11 +488,12 @@ class UI:
             if not plan['changed']:
                 self.status = 'EEPROM MAC addresses already match; no write needed'
                 return False
-            text = self.service.mac_eeprom_preview(plan)
+            comparison = self.service.mac_eeprom_comparison(plan)
+            metadata = ''
             source = getattr(self, 'last_mac_plan', None)
             if source:
-                text = 'RK3308 OTP ID: ' + source['otp_id'] + '\nMAC source: ' + source['source'] + '\n\n' + text
-            if not self.view_text(text, offer_write=True, action_label='write MACs to EEPROM'):
+                metadata = 'RK3308 OTP ID: ' + source['otp_id'] + '\nMAC source: ' + source['source']
+            if not self.view_comparison(comparison, metadata, action_label='write MACs to EEPROM'):
                 self.status = 'MACs in memory; EEPROM write declined'
                 return False
             if not self.confirm_yes('Write only MACs to EEPROM? mac_count and CRC are updated; other EEPROM fields are preserved.'):
@@ -532,11 +533,12 @@ class UI:
 
     def write_eeprom(self):
         def operation():
-            text = self.service.eeprom_preview(self.cfg)
+            comparison = self.service.eeprom_comparison(self.cfg)
+            metadata = ''
             plan = getattr(self, 'last_mac_plan', None)
             if plan and plan['generated']['macs'] == self.service.document(self.cfg)['macs']:
-                text = 'RK3308 OTP ID: ' + plan['otp_id'] + '\nMAC source: ' + plan['source'] + '\n\n' + text
-            if not self.view_text(text, offer_write=True) or not self.confirm_yes('WRITE EEPROM with current configuration?'):
+                metadata = 'RK3308 OTP ID: ' + plan['otp_id'] + '\nMAC source: ' + plan['source']
+            if not self.view_comparison(comparison, metadata) or not self.confirm_yes('WRITE EEPROM with current configuration?'):
                 self.status = 'EEPROM write cancelled'
                 return False
             if not self.service.write_eeprom(self.cfg, confirmed=True):
@@ -581,6 +583,100 @@ class UI:
                 + '\n\nPROPOSED:\n' + plan['proposed_overlay_string']
                 + '\n' + plan['proposed_user_overlay_string'])
         return self.view_text(text, offer_write=offer_write)
+
+    def view_comparison(self, comparison, metadata='', action_label='write'):
+        position = 0
+        changed_attr = curses.A_BOLD
+        try:
+            if curses.has_colors():
+                try:
+                    curses.use_default_colors()
+                    curses.init_pair(1, curses.COLOR_YELLOW, -1)
+                except curses.error:
+                    curses.init_pair(1, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+                changed_attr |= curses.color_pair(1)
+        except curses.error:
+            pass
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            width = max(1, w-2)
+            lines = []
+
+            def wrap(value, size):
+                return textwrap.wrap(value, max(1, size), replace_whitespace=False,
+                                     drop_whitespace=False) or ['']
+
+            def add_text(value, attr=curses.A_NORMAL):
+                for line in value.splitlines():
+                    lines.extend([[(1, part, attr)] for part in wrap(line, width)])
+
+            add_text(comparison['title'], curses.A_BOLD)
+            if metadata:
+                add_text(metadata)
+            if comparison['error']:
+                add_text(comparison['error'], changed_attr)
+            add_text(comparison['note'])
+            add_text('* changed value', changed_attr)
+            add_text('')
+            if w >= 80:
+                label_width = min(28, max(len(row['field']) for row in comparison['rows']) + 2)
+                value_width = max(1, (width - label_width - 6) // 2)
+                current_x = 1 + label_width + 2
+                proposed_x = current_x + value_width + 2
+                lines.append([(1, 'Field', curses.A_BOLD), (current_x, 'Current EEPROM', curses.A_BOLD),
+                              (proposed_x, 'Proposed EEPROM', curses.A_BOLD)])
+                lines.append([(1, '-' * width, curses.A_DIM)])
+                for row in comparison['rows']:
+                    label = ('* ' if row['changed'] else '  ') + row['field']
+                    cells = [wrap(label, label_width), wrap(row['current'], value_width),
+                             wrap(row['proposed'], value_width)]
+                    for index in range(max(map(len, cells))):
+                        segments = []
+                        for cell, x, attr in zip(cells, (1, current_x, proposed_x),
+                                                 (curses.A_NORMAL, curses.A_NORMAL,
+                                                  changed_attr if row['changed'] else curses.A_NORMAL)):
+                            if index < len(cell):
+                                segments.append((x, cell[index], attr))
+                        lines.append(segments)
+            else:
+                for heading, key in [('Current EEPROM:', 'current'), ('Proposed EEPROM:', 'proposed')]:
+                    add_text(heading, curses.A_BOLD)
+                    for row in comparison['rows']:
+                        changed = key == 'proposed' and row['changed']
+                        prefix = '* ' if changed else ''
+                        add_text(prefix + row['field'] + ': ' + row[key],
+                                 changed_attr if changed else curses.A_NORMAL)
+                    add_text('')
+            visible = max(1, h-2)
+            position = max(0, min(position, max(0, len(lines)-visible)))
+            self.stdscr.erase()
+            for y, segments in enumerate(lines[position:position+visible]):
+                for x, line, attr in segments:
+                    try:
+                        self.stdscr.addnstr(y, x, line, max(1, w-x-1), attr)
+                    except curses.error:
+                        pass
+            try:
+                footer = 'Enter: confirm ' + action_label + '  q/Esc: cancel  PgUp/PgDn: scroll'
+                self.stdscr.addnstr(h-1, 0, footer, max(1, w-1), curses.A_DIM)
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            ch = self.stdscr.getch()
+            if ch == 3:
+                raise KeyboardInterrupt
+            if ch in (27, ord('q'), ord('Q')):
+                return False
+            if ch in (10, 13, curses.KEY_ENTER):
+                return True
+            if ch in (curses.KEY_DOWN, ord('j')):
+                position += 1
+            elif ch in (curses.KEY_UP, ord('k')):
+                position -= 1
+            elif ch == curses.KEY_NPAGE:
+                position += visible
+            elif ch == curses.KEY_PPAGE:
+                position -= visible
 
     def view_text(self, text, offer_write=False, action_label='write'):
         position = 0

@@ -163,27 +163,23 @@ class MacTests(unittest.TestCase):
         ui.service = self.service
         ui.cfg = cfg
         ui.last_mac_plan = self.service.mac_plan(cfg)
-        ui.view_text = Mock(return_value=False)
+        ui.view_comparison = Mock(return_value=False)
         ui.confirm_yes = Mock(return_value=False)
         with patch.object(self.service, 'write_eeprom') as write:
             ui.write_eeprom()
             ui.confirm_yes.assert_not_called()
             write.assert_not_called()
-            ui.view_text.return_value = True
+            ui.view_comparison.return_value = True
             ui.write_eeprom()
             write.assert_not_called()
             ui.confirm_yes.return_value = True
             ui.write_eeprom()
             write.assert_called_once_with(cfg, confirmed=True)
-        text = ui.view_text.call_args.args[0]
-        self.assertIn('RK3308 OTP ID: 0235221703', text)
-        self.assertIn('Current EEPROM:', text)
-        self.assertIn('Product ID:', text)
-        self.assertIn('Serial number:', text)
-        self.assertIn('Manufacturing date:', text)
-        self.assertIn('Interface mask:', text)
-        self.assertIn('CRC32:', text)
-        self.assertIn('MAC8  Reserved', text)
+        comparison, metadata = ui.view_comparison.call_args.args
+        self.assertIn('RK3308 OTP ID: 0235221703', metadata)
+        fields = {row['field']: row['proposed'] for row in comparison['rows']}
+        for field in ('Product ID', 'Serial number', 'Manufacturing date', 'Interface mask', 'CRC32', 'MAC8  Reserved'):
+            self.assertIn(field, fields)
 
     def test_policy_loads_from_settings_separately_from_eeprom(self):
         path = self.root / 'settings.yaml'
@@ -280,6 +276,7 @@ class MacOnlyWriteTests(unittest.TestCase):
         ui.service = self.service
         ui.cfg = BoardConfig(serial_number=999, board_name='Unsaved RAM changes')
         ui.view_text = Mock(return_value=True)
+        ui.view_comparison = Mock(return_value=True)
         ui.confirm_yes = Mock(side_effect=[True, False])
         ui.generate_macs()
         self.assertEqual(ui.confirm_yes.call_count, 2)

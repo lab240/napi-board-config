@@ -114,21 +114,51 @@ class BoardService:
         return [f'MAC{i + 1}  {MAC_SLOT_LABELS[i]:<18} {format_mac(mac)}'
                 for i, mac in enumerate(cfg.macs)]
 
-    def eeprom_rows(self, data):
+    def eeprom_fields(self, data):
         cfg = decode_config(data, self.catalog)
         self.validate(cfg)
         fields = EEPROM_HEADER.unpack(data[:EEPROM_HEADER.size])
-        rows = [f'Format version: {fields[1]}', f'Platform: {cfg.platform} (ID {fields[2]})',
-                f'Product ID: {cfg.product_id}', f'Product revision: {cfg.product_rev}',
-                f'Board name: {cfg.board_name}', f'Serial number: {cfg.serial_number}',
-                f'Manufacturing date: {cfg.mfg_date or "not set"}',
-                f'Interface mask: 0x{fields[5]:08X}']
-        rows += [f'{definition.title}: {"enabled" if key in cfg.enabled else "disabled"}'
+        rows = [('Format version', str(fields[1])), ('Platform', f'{cfg.platform} (ID {fields[2]})'),
+                ('Product ID', str(cfg.product_id)), ('Product revision', str(cfg.product_rev)),
+                ('Board name', cfg.board_name), ('Serial number', str(cfg.serial_number)),
+                ('Manufacturing date', cfg.mfg_date or 'not set'),
+                ('Interface mask', f'0x{fields[5]:08X}')]
+        rows += [(definition.title, 'enabled' if key in cfg.enabled else 'disabled')
                  for key, definition in IF_BY_KEY.items()]
-        rows += [f'RTC on I2C1: {cfg.rtc_i2c1}', f'MAC count: {len(cfg.macs)}']
-        rows += self.mac_rows(cfg)
-        rows += [f'CRC32: 0x{int.from_bytes(data[EEPROM_CRC_OFFSET:EEPROM_SIZE], "little"):08X}']
+        rows += [('RTC on I2C1', cfg.rtc_i2c1), ('MAC count', str(len(cfg.macs)))]
+        rows += [(f'MAC{i + 1}  {purpose}', format_mac(cfg.macs[i]) if i < len(cfg.macs) else 'not set')
+                 for i, purpose in enumerate(MAC_SLOT_LABELS)]
+        rows += [('CRC32', f'0x{int.from_bytes(data[EEPROM_CRC_OFFSET:EEPROM_SIZE], "little"):08X}')]
         return rows
+
+    def eeprom_rows(self, data):
+        return [f'{label:<24} {value}' if label.startswith('MAC') and label != 'MAC count'
+                else f'{label}: {value}' for label, value in self.eeprom_fields(data)]
+
+    def eeprom_comparison(self, cfg):
+        self.validate(cfg)
+        error = ''
+        try:
+            self.require_eeprom()
+            current = dict(self.eeprom_fields(self.eeprom.read()))
+        except ValueError as exc:
+            current = {}
+            error = 'No valid EEPROM configuration: ' + str(exc)
+        proposed = self.eeprom_fields(encode_config(cfg, self.catalog))
+        return self.configuration_comparison(current, proposed, 'FULL EEPROM CONFIGURATION WRITE',
+                                            'Writes all Format v2 fields. Comment and boot settings are not stored in EEPROM.', error)
+
+    def configuration_comparison(self, current, proposed, title, note, error=''):
+        return {'title': title, 'note': note, 'error': error,
+                'rows': [{'field': label, 'current': current.get(label, 'not available'), 'proposed': value,
+                          'changed': current.get(label) != value} for label, value in proposed]}
+
+    def mac_eeprom_comparison(self, plan):
+        current = dict(self.eeprom_fields(plan['before']))
+        proposed = [(label, value) for label, value in self.eeprom_fields(plan['after'])
+                    if label.startswith('MAC') or label == 'CRC32']
+        return self.configuration_comparison(current, proposed, 'WRITE MACs TO EEPROM',
+                                            'Only MAC fields, mac_count and CRC32 are written; other EEPROM bytes are preserved.')
 
     def eeprom_preview(self, cfg):
         self.validate(cfg)
