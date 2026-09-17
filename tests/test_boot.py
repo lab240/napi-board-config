@@ -116,7 +116,7 @@ class BootTests(unittest.TestCase):
         self.eeprom.write_bytes(b'\xff' * 256)
         ui = UI(Mock(), self.service)
         self.assertEqual(ui.cfg, self.service.defaults())
-        self.assertIn('Bad magic', ui.status)
+        self.assertIn('EEPROM empty', ui.status)
         self.eeprom.unlink()
         ui = UI(Mock(), self.service)
         self.assertIn('EEPROM unavailable / not configured', ui.status)

@@ -341,6 +341,7 @@ Boot SHA256 остался `063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7
   Статус процессора обновляется по EEPROM, не по сохранённому draft proc_id.
 - Строка Processor ID показывает текущий OTP + (not in EEPROM)/(in EEPROM)
   или PROCESSOR MISMATCH со старым ID; OTP UNAVAILABLE при ошибке источника.
+  Старт с нулевой/FF EEPROM показывает EEPROM empty вместо Bad magic.
 - View and write processor ID перенесён в ACTIONS рядом с MAC, без дублирования
   в SERVICE. Для пустых 256 байт zero/FF предлагает полный draft+OTP в v3,
   preview всех полей → Enter → yes → backup → stale-проверка → read-back.
@@ -360,3 +361,6 @@ Boot SHA256 остался `063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7
   пользовательского reset: SHA256 5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1.
   Boot SHA256 прежний 063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7aaa386c33015.
   Во время проверки реальные EEPROM/boot записи и reboot не выполнять.
+- Коммит согласованных правок: 796ed44. 79 тестов также прошли на NAPI-C.
+  В 120×40 проверены новые actions, полный boot-preview и processor ID preview
+  для пустой EEPROM; отдельные yes-подтверждения отменены ответом no.

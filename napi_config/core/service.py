@@ -507,6 +507,10 @@ class BoardService:
 
     def initial_configuration(self):
         try:
+            self.require_eeprom()
+            image = self.eeprom.read()
+            if len(image) == 256 and image in (bytes(256), b'\xff' * 256):
+                return self.defaults(), 'EEPROM empty; defaults loaded. Write a new configuration to initialize it.'
             return self.read_eeprom(), 'EEPROM configuration loaded'
         except (ValueError, TypeError, OSError, KeyError) as exc:
             return self.defaults(), f'Defaults loaded; EEPROM: {exc}'
