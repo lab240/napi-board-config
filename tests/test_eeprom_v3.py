@@ -237,11 +237,21 @@ class EepromV3Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.processor_plan(rebind=True)
 
-    def test_v3_write_requires_bus_without_forcing_interface_defaults(self):
+    def test_v3_writes_and_migration_preserve_independent_bus_setting(self):
         self.assertNotIn('i2c1', self.service.defaults().enabled)
-        self.service.validate(BoardConfig())
-        with self.assertRaisesRegex(ValueError, 'I2C1 must be enabled'):
-            self.service.write_eeprom(BoardConfig(), confirmed=True)
+        cfg = BoardConfig()
+        self.assertTrue(self.service.write_eeprom(cfg, confirmed=True))
+        self.assertEqual(self.service.read_eeprom(), cfg)
+        plan = self.service.processor_plan()
+        self.service.apply_instance_eeprom_plan(plan, confirmed=True)
+        self.assertNotIn('i2c1', self.service.read_eeprom().enabled)
+        self.store(BoardConfig(format_version=2))
+        plan = self.service.migration_plan()
+        self.service.apply_instance_eeprom_plan(plan, confirmed=True)
+        self.assertEqual(self.service.read_eeprom(), cfg)
+        plan = self.service.mac_eeprom_plan(self.cfg.macs)
+        self.service.apply_mac_eeprom_plan(plan, confirmed=True)
+        self.assertNotIn('i2c1', self.service.read_eeprom().enabled)
 
     def test_tui_preview_and_confirmation_cancellation_do_not_write(self):
         self.store(replace(self.cfg, proc_id_type=0, proc_id=b''))

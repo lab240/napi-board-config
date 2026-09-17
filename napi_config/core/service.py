@@ -63,7 +63,6 @@ class BoardService:
         require_confirmation(confirmed)
         self.require_eeprom(write=True)
         self.validate(cfg)
-        self.validate_eeprom_bus(cfg)
         encoded = encode_config(cfg, self.catalog)
         existing = self.eeprom.read()
         try:
@@ -226,7 +225,6 @@ class BoardService:
         self.validate(cfg)
         if replace_eeprom_macs(plan['before'], cfg.macs, self.catalog) != plan['after']:
             raise ValueError('MAC-only plan modifies other EEPROM fields')
-        self.validate_eeprom_bus(cfg)
         if cfg.proc_id_type and validate_otp(self.otp.read_id()) != cfg.proc_id:
             raise ValueError('PROCESSOR MISMATCH: processor changed since MAC write preview')
         if plan['before'] == plan['after']:
@@ -271,7 +269,6 @@ class BoardService:
 
     def instance_eeprom_plan(self, candidate, title, note, otp=None, rebind=False):
         self.validate(candidate)
-        self.validate_eeprom_bus(candidate)
         image = self.eeprom.read()
         size, _ = eeprom_layout(image)
         original = decode_config(image, self.catalog)
@@ -326,10 +323,6 @@ class BoardService:
         if self.eeprom.read()[:len(plan['after'])] != plan['after']:
             raise OSError('EEPROM read-back mismatch')
         return True
-
-    def validate_eeprom_bus(self, cfg):
-        if cfg.format_version == 3 and 'i2c1' not in cfg.enabled:
-            raise ValueError('I2C1 must be enabled before writing EEPROM format v3')
 
     def mac_strings(self, cfg):
         return [format_mac(mac) for mac in cfg.macs]
