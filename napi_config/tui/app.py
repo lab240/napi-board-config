@@ -104,7 +104,7 @@ class UI:
             "profile_delete": "[ Delete board from local DB ]",
             "github_db": "[ Load DB from GitHub ]",
             "view_macs": "[ View MACs ]",
-            "generate_macs": "[ Generate new MACs ]",
+            "generate_macs": "[ Generate MACs ]",
             "enable_i2c1_eeprom": "[ Add EEPROM overlay and reboot ]",
             "view_boot": "[ View current boot config ]",
             "quit": "[ Quit ]",
@@ -168,7 +168,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v18 "
+        title = " NAPI Board Config v19 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -445,15 +445,36 @@ class UI:
         self.perform(operation, update=True)
 
     def generate_macs(self):
-        if not self.confirm_yes('Generate 8 new MACs and replace current MACs? EEPROM stays unchanged.'):
-            self.status = 'MAC generation cancelled'
-            return
-        self.perform(lambda: self.service.generate_macs(self.cfg, confirmed=True), update=True)
+        def operation():
+            plan = self.service.mac_plan(self.cfg)
+            text = ('RK3308 OTP ID: ' + plan['otp_id'] + '\nMAC source: ' + plan['source']
+                    + '\n\nCurrent configuration:\n' + ('\n'.join(self.service.mac_rows(self.cfg)) or 'No MAC addresses'))
+            if plan['eeprom_current'] and plan['eeprom_current']['macs'] != plan['current']['macs']:
+                stored = self.service.configuration_from_document(plan['eeprom_current'])
+                text += '\n\nCurrent EEPROM:\n' + '\n'.join(self.service.mac_rows(stored))
+            generated = self.service.configuration_from_document(plan['generated'])
+            text += '\n\nGenerated:\n' + '\n'.join(self.service.mac_rows(generated))
+            if plan['already_matches']:
+                self.view_text(text + '\n\nMAC addresses already match this SoC.')
+                self.last_mac_plan = plan
+                self.status = 'MAC addresses already match this SoC.'
+                return False
+            if self.cfg.macs or (plan['eeprom_current'] and plan['eeprom_current']['macs']):
+                text += '\n\nMAC addresses already exist. Replacement requires confirmation.'
+            if not self.view_text(text, offer_write=True, action_label='apply MACs'):
+                self.status = 'MAC generation cancelled'
+                return False
+            if not self.confirm_yes('Regenerate MAC addresses in memory? EEPROM stays unchanged.'):
+                self.status = 'MAC generation cancelled'
+                return False
+            candidate = self.service.apply_mac_plan(self.cfg, plan, confirmed=True)
+            self.last_mac_plan = plan
+            return candidate
+        self.perform(operation, update=True)
 
     def view_macs(self):
-        addresses = self.service.mac_strings(self.cfg)
-        text = 'MAC addresses\n\n' + '\n'.join(f'{i}: {mac}' for i, mac in enumerate(addresses, 1)) if addresses else 'No MAC addresses generated'
-        self.popup(text, wait=True)
+        rows = self.service.mac_rows(self.cfg)
+        self.view_text('MAC addresses\n\n' + '\n'.join(rows) if rows else 'No MAC addresses generated')
 
     def load_defaults(self):
         if self.confirm_yes('Load defaults? Board configuration and instance data will be reset.'):
@@ -479,10 +500,18 @@ class UI:
             self.status = 'EEPROM load cancelled'
 
     def write_eeprom(self):
-        if self.confirm_yes('WRITE EEPROM with current configuration?'):
-            self.perform(lambda: self.service.write_eeprom(self.cfg, confirmed=True))
-        else:
-            self.status = 'EEPROM write cancelled'
+        def operation():
+            text = self.service.eeprom_mac_preview(self.cfg)
+            plan = getattr(self, 'last_mac_plan', None)
+            if plan and plan['generated']['macs'] == self.service.document(self.cfg)['macs']:
+                text = 'RK3308 OTP ID: ' + plan['otp_id'] + '\nMAC source: ' + plan['source'] + '\n\n' + text
+            if not self.view_text(text, offer_write=True) or not self.confirm_yes('WRITE EEPROM with current configuration?'):
+                self.status = 'EEPROM write cancelled'
+                return False
+            if not self.service.write_eeprom(self.cfg, confirmed=True):
+                self.status = 'EEPROM configuration already matches; no write performed'
+                return False
+        self.perform(operation)
 
     def write_env(self):
         def operation():
@@ -522,7 +551,7 @@ class UI:
                 + '\n' + plan['proposed_user_overlay_string'])
         return self.view_text(text, offer_write=offer_write)
 
-    def view_text(self, text, offer_write=False):
+    def view_text(self, text, offer_write=False, action_label='write'):
         position = 0
         while True:
             h, w = self.stdscr.getmaxyx()
@@ -538,7 +567,7 @@ class UI:
                 except curses.error:
                     pass
             try:
-                footer = 'Enter: confirm write  q/Esc: view only' if offer_write else 'Up/Down scroll  PgUp/PgDn  q/Esc close'
+                footer = 'Enter: confirm ' + action_label + '  q/Esc: view only' if offer_write else 'Up/Down scroll  PgUp/PgDn  q/Esc close'
                 self.stdscr.addnstr(h-1, 0, footer, max(1, w-1), curses.A_DIM)
             except curses.error:
                 pass

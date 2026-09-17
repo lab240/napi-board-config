@@ -1,5 +1,4 @@
 import datetime
-import secrets
 from dataclasses import asdict, replace
 from .models import BoardConfig, MAX_MACS, IF_BY_KEY, RTC_CHOICES, NAME_LEN
 from .codec import validate, _date_to_bytes, format_mac
@@ -30,12 +29,6 @@ def validate_configuration(cfg, catalog):
         errors.append('Multicast MAC addresses are not allowed')
     if errors:
         raise ValueError('; '.join(errors))
-
-
-def generate_macs():
-    low = secrets.randbelow((1 << 40) - MAX_MACS + 1)
-    base = (0x02 << 40) | low
-    return [(base + i).to_bytes(6, 'big') for i in range(MAX_MACS)]
 
 
 def to_document(cfg):

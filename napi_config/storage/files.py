@@ -68,6 +68,10 @@ def load_platforms(path):
     return data['platforms']
 
 
+def load_settings(path):
+    return parse_yaml(Path(path).read_text(encoding='utf-8'))
+
+
 class ProfileDownload:
     def fetch(self):
         request = urllib.request.Request('https://raw.githubusercontent.com/napilab/napi-boards/main/yaml-config/boards.yaml', headers={'User-Agent': 'napi-config'})

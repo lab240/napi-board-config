@@ -19,6 +19,8 @@ class CoreTests(unittest.TestCase):
         self.eeprom = self.path / 'eeprom'
         self.eeprom.write_bytes(b'\xff' * 256)
         self.service = create_service(str(self.eeprom), str(self.path / 'boards.yaml'))
+        self.service.otp = Mock()
+        self.service.otp.read_id.return_value = bytes.fromhex('0235221703')
         self.cfg = BoardConfig(serial_number=0xffffffff, mfg_date='2255-12-31')
 
     def test_round_trip_and_crc(self):

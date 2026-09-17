@@ -1,0 +1,2 @@
+# MAC1 remains stored in EEPROM even when assignment to Native Ethernet is off.
+set_native_eth_mac: false

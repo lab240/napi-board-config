@@ -2,10 +2,11 @@ from dataclasses import replace
 import re
 from .models import BoardConfig, IF_BY_KEY, RTC_CHOICES
 from .codec import encode_config, decode_config, overlays_for, platform_conflicts, format_mac
-from .configuration import validate_configuration, generate_macs, updated, from_document, to_document, default_date
+from .configuration import validate_configuration, updated, from_document, to_document, default_date
+from .mac import generate_macs, validate_otp, MAC_SOURCE, MAC_SLOT_LABELS, MacPolicy, mac_assignments, OTP_ERROR
 from .profiles import profile_to_config, config_to_profile
 from .boot import patch_boot, boot_values, resolve_overlay
-from .ports import EepromDevice, ProfileRepository, BootFiles, ConfigurationFiles, HardwareProbe, ProfileSource
+from .ports import EepromDevice, ProfileRepository, BootFiles, ConfigurationFiles, HardwareProbe, ProfileSource, OtpSource
 
 
 def require_confirmation(confirmed):
@@ -16,7 +17,7 @@ def require_confirmation(confirmed):
 class BoardService:
     def __init__(self, catalog, eeprom: EepromDevice, profiles: ProfileRepository,
                  boot: BootFiles, configurations: ConfigurationFiles,
-                 probe: HardwareProbe, download: ProfileSource):
+                 probe: HardwareProbe, download: ProfileSource, otp: OtpSource, mac_policy=None):
         self.catalog = catalog
         self.eeprom = eeprom
         self.profiles = profiles
@@ -24,6 +25,8 @@ class BoardService:
         self.configurations = configurations
         self.probe = probe
         self.download = download
+        self.otp = otp
+        self.mac_policy = mac_policy if mac_policy is not None else MacPolicy()
 
     def defaults(self):
         return BoardConfig()
@@ -35,7 +38,10 @@ class BoardService:
         return to_document(cfg)
 
     def load_configuration(self, path):
-        cfg = from_document(self.configurations.load(path))
+        return self.configuration_from_document(self.configurations.load(path))
+
+    def configuration_from_document(self, data):
+        cfg = from_document(data)
         self.validate(cfg)
         return cfg
 
@@ -55,17 +61,67 @@ class BoardService:
         self.require_eeprom(write=True)
         self.validate(cfg)
         encoded = encode_config(cfg, self.catalog)
+        if self.eeprom.read()[:len(encoded)] == encoded:
+            return False
         self.eeprom.write(encoded)
         actual = self.eeprom.read()[:len(encoded)]
         if actual != encoded:
             raise OSError('EEPROM read-back mismatch')
         decode_config(actual, self.catalog)
+        return True
 
     def generate_macs(self, cfg, confirmed=False):
         require_confirmation(confirmed)
-        candidate = replace(cfg, macs=generate_macs(), enabled=set(cfg.enabled))
+        return self.apply_mac_plan(cfg, self.mac_plan(cfg), confirmed=True)
+
+    def mac_plan(self, cfg):
+        self.validate(cfg)
+        if cfg.platform != 'rk3308':
+            raise ValueError(OTP_ERROR)
+        try:
+            otp = validate_otp(self.otp.read_id())
+        except (OSError, ValueError) as exc:
+            raise ValueError(OTP_ERROR) from exc
+        candidate = replace(cfg, macs=generate_macs(otp), enabled=set(cfg.enabled))
+        self.validate(candidate)
+        try:
+            stored = self.document(self.read_eeprom())
+            stored_error = ''
+        except (ValueError, OSError) as exc:
+            stored = None
+            stored_error = str(exc)
+        return {'otp_id': otp.hex(), 'source': MAC_SOURCE,
+                'current': self.document(cfg), 'generated': self.document(candidate),
+                'eeprom_current': stored, 'eeprom_error': stored_error,
+                'already_matches': cfg.macs == candidate.macs,
+                'slots': [{'slot': i + 1, 'purpose': purpose} for i, purpose in enumerate(MAC_SLOT_LABELS)]}
+
+    def apply_mac_plan(self, cfg, plan, confirmed=False):
+        require_confirmation(confirmed)
+        if self.document(cfg) != plan['current']:
+            raise ValueError('Configuration changed since MAC preview')
+        candidate = from_document(plan['generated'])
         self.validate(candidate)
         return candidate
+
+    def mac_assignments(self, cfg):
+        self.validate(cfg)
+        return {'set_native_eth_mac': self.mac_policy.set_native_eth_mac,
+                'assignments': mac_assignments(cfg.macs, self.mac_policy)}
+
+    def mac_rows(self, cfg):
+        return [f'MAC{i + 1}  {MAC_SLOT_LABELS[i]:<18} {format_mac(mac)}'
+                for i, mac in enumerate(cfg.macs)]
+
+    def eeprom_mac_preview(self, cfg):
+        self.validate(cfg)
+        try:
+            current = self.read_eeprom()
+            existing = '\n'.join(self.mac_rows(current)) or 'No MAC addresses'
+        except ValueError as exc:
+            existing = 'No valid EEPROM configuration: ' + str(exc)
+        return ('Current EEPROM MACs:\n' + existing + '\n\nProposed EEPROM MACs:\n'
+                + ('\n'.join(self.mac_rows(cfg)) or 'No MAC addresses'))
 
     def mac_strings(self, cfg):
         return [format_mac(mac) for mac in cfg.macs]

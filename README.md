@@ -1,4 +1,4 @@
-# NAPI Board Config v18
+# NAPI Board Config v19
 
 Утилита для настройки плат NAPI под Armbian и NapiLinux/U-Boot.
 Позволяет читать и записывать EEPROM, выбирать профиль платы, задавать серийный
@@ -40,7 +40,9 @@ napi-config --help
 | `napi-config eeprom enable --overlay eeprom24 --yes` | Добавить выбранный стандартный оверлей и I2C1, без reboot |
 | `napi-config eeprom show` | Прочитать EEPROM и проверить формат, CRC и значения |
 | `napi-config eeprom write --config instance.json --yes` | Записать конфигурацию и проверить чтением |
-| `napi-config mac generate --yes --output instance.json` | Сгенерировать восемь последовательных MAC и сохранить JSON |
+| `napi-config mac preview --json` | Прочитать OTP и показать текущие/генерируемые MAC без изменений |
+| `napi-config mac generate --yes --output instance.json` | Сформировать восемь стабильных MAC из OTP и сохранить JSON |
+| `napi-config mac assignments --config instance.json --json` | Показать назначения фиксированных MAC-слотов |
 | `napi-config board info` | Показать конфигурацию и данные экземпляра из EEPROM |
 | `napi-config overlay list` | Сформировать список overlays по конфигурации EEPROM |
 | `napi-config boot show` | Показать текущий boot-файл |
@@ -54,6 +56,10 @@ napi-config --help
 - `--json` — машинный вывод для всех команд, кроме TUI.
 - `--eeprom PATH` — EEPROM device или бинарный файл; по умолчанию
   `/sys/bus/i2c/devices/1-0050/eeprom`.
+- `--otp PATH` — путь к RK3308 NVMEM для mac preview/generate и TUI;
+  по умолчанию `/sys/bus/nvmem/devices/rockchip-otp0/nvmem`. В производстве
+  использовать реальный NVMEM; временный файл применяется только для тестов.
+- `--settings PATH` — YAML настроек назначения MAC, по умолчанию `settings.yaml`.
 - `--db PATH`, `--platforms PATH` — пути к YAML-профилям и определениям платформ.
 - `--boot-dir DIR` — каталог boot-файлов; по умолчанию `/boot`.
 - `--config instance.json` — источник для board/overlay/mac и boot preview/write.
@@ -68,8 +74,13 @@ napi-config --help
 ./napi-config boot preview --config instance.json --json
 ```
 
-Генерация MAC без источника создаёт конфигурацию по умолчанию; с `--config`
-сохраняет остальные поля экземпляра. Без `--output` результат идёт только в stdout.
+Генерация MAC без `--config`/`--profile` сохраняет валидную конфигурацию EEPROM,
+если она доступна; иначе использует defaults. С `--config` сохраняет остальные
+поля экземпляра. Источник MAC во всех случаях — только OTP, serial не участвует.
+`--output` сохраняет instance JSON, пригодный для `eeprom write --config`.
+JSON stdout генерации содержит `configuration` и `mac_generation` с OTP ID,
+источником, текущими и новыми значениями; не подавать этот отчёт целиком как
+instance JSON. Без `--output` ничего не сохраняется.
 CLI не задаёт интерактивных вопросов. Результаты идут в stdout, ошибки — в stderr.
 Коды завершения: 0 — успех, 1 — ошибка операции, 2 — ошибка аргументов,
 130 — прерывание.
@@ -110,6 +121,48 @@ I2C1 включается отдельно от RTC и EEPROM; RTC требуе�
 это имя выдала команда поиска и пользователь проверил соответствие оборудованию.
 Ранее явно включённый стандартный EEPROM-оверлей сохраняется при обычной
 генерации boot-строки, пока I2C1 включён.
+
+## MAC из RK3308 OTP (v19)
+
+NVMEM открывается только для чтения. `fcntl.flock` берёт exclusive advisory lock
+с таймаутом 2 секунды; ID — ровно 5 бинарных байт с offset 20. Offset 8 не
+используется. Нет файла/доступа/lock, короткое чтение, ID из нулей или FF — ошибка
+`MAC generation failed: invalid or unavailable RK3308 OTP ID`, без fallback.
+
+`SHA256(b"NAPI-MAC-v1\x00" + otp)`: первые пять байт дают основу,
+младшие три бита пятого байта обнуляются. Первый октет MAC всегда `02`,
+последние три бита последнего октета — номер слота 0..7. Случайность, время,
+serial и официальный IEEE-блок CominTech не используются.
+Один OTP даёт один набор. 37 бит хеша не гарантируют отсутствия коллизий:
+для строгой уникальности между серийными платами нужна производственная
+проверка дубликатов; отдельная БД в утилиту не добавлена.
+
+| Слот | Назначение |
+| --- | --- |
+| MAC1 | Native Ethernet |
+| MAC2 | W5500 SPI1 |
+| MAC3 | W5500 SPI2 |
+| MAC4 | USB Ethernet #1 |
+| MAC5 | USB Ethernet #2 |
+| MAC6–MAC8 | Reserved |
+
+Отсутствующие интерфейсы не сдвигают слоты. Контрольные примеры:
+`0235221703` → `02:98:1C:8E:55:E0`…`02:98:1C:8E:55:E7`;
+`090b131d04` → `02:9E:E6:97:4D:60`…`02:9E:E6:97:4D:67`.
+
+TUI `Generate MACs` сначала показывает OTP, источник и текущие/новые MAC.
+q/Esc отменяет, Enter открывает подтверждение точным `yes` (по умолчанию отмена).
+Генерация меняет только память; `Write EEPROM` отдельно показывает текущие
+EEPROM MAC и предлагаемые значения, затем требует `yes`. Совпадающая целиком
+EEPROM-конфигурация повторно не записывается. CLI требует `--yes`; для просмотра
+служит `mac preview`. После генерации записываются все 8 слотов и штатный CRC32.
+
+В `settings.yaml` параметр `set_native_eth_mac: false` по умолчанию исключает
+MAC1 из результата `mac assignments`. При `true` Native Ethernet получает
+назначение MAC1. Адрес по-прежнему генерируется и хранится в обоих случаях;
+остальные слоты не меняются. Параметр относится к настройкам приложения,
+не занимает EEPROM bits и не меняет Format v2. Команда возвращает назначения
+для потребителя; программирования сетевых интерфейсов Linux в проекте пока нет.
 
 ## Данные и проверка
 

@@ -1,6 +1,10 @@
 from typing import Protocol
 
 
+class OtpSource(Protocol):
+    def read_id(self) -> bytes: ...
+
+
 class EepromDevice(Protocol):
     def availability(self, write: bool = False) -> dict: ...
     def read(self) -> bytes: ...

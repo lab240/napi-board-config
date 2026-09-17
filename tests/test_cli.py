@@ -24,9 +24,11 @@ class CliTests(unittest.TestCase):
             denied = self.run_cli('mac', 'generate', '--output', config)
             self.assertNotEqual(denied.returncode, 0)
             self.assertFalse(Path(config).exists())
-            generated = self.run_cli('mac', 'generate', '--profile', '6', '1', '--output', config, '--yes', '--json')
+            otp = Path(directory) / 'otp'
+            otp.write_bytes(bytes(20) + bytes.fromhex('0235221703'))
+            generated = self.run_cli('mac', 'generate', '--profile', '6', '1', '--output', config, '--yes', '--json', '--otp', str(otp))
             self.assertEqual(generated.returncode, 0, generated.stderr)
-            data = json.loads(generated.stdout)
+            data = json.loads(generated.stdout)['configuration']
             self.assertEqual(data['board_name'], 'FCU3308')
             self.assertEqual(len(data['macs']), 8)
             before = eeprom.read_bytes()
@@ -95,6 +97,39 @@ class CliTests(unittest.TestCase):
             self.assertIn('overlays=i2c1 otg-host eeprom24\n', env.read_text())
             self.assertIn('user_overlays=arbitrary  name  \n', env.read_text())
             self.assertEqual(list(user.iterdir()), [user / 'rk3308-eeprom24.dtbo'])
+
+    def test_otp_preview_generation_and_no_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            otp = root / 'nvmem'
+            otp.write_bytes(bytes(20) + bytes.fromhex('0235221703'))
+            eeprom = root / 'eeprom'
+            eeprom.write_bytes(b'\xff' * 256)
+            common = ['--otp', str(otp), '--eeprom', str(eeprom), '--json']
+            before = eeprom.read_bytes()
+            preview = self.run_cli('mac', 'preview', *common)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            plan = json.loads(preview.stdout)
+            self.assertEqual(plan['otp_id'], '0235221703')
+            self.assertEqual(plan['generated']['macs'][0], '02:98:1C:8E:55:E0')
+            output = root / 'instance.json'
+            denied = self.run_cli('mac', 'generate', '--output', str(output), *common)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertFalse(output.exists())
+            first = self.run_cli('mac', 'generate', '--yes', '--output', str(output), *common)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            document = output.read_text()
+            second = self.run_cli('mac', 'generate', '--yes', *common)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(json.loads(first.stdout)['configuration'], json.loads(second.stdout)['configuration'])
+            self.assertEqual(eeprom.read_bytes(), before)
+            otp.write_bytes(bytes(25))
+            failed = self.run_cli('mac', 'generate', '--yes', '--output', str(output), *common)
+            self.assertEqual(failed.returncode, 1)
+            self.assertEqual(failed.stdout, '')
+            self.assertIn('MAC generation failed: invalid or unavailable RK3308 OTP ID', failed.stderr)
+            self.assertEqual(output.read_text(), document)
+            self.assertEqual(eeprom.read_bytes(), before)
 
     def test_invalid_eeprom_has_error_and_no_stdout(self):
         with tempfile.TemporaryDirectory() as directory:

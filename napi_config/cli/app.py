@@ -4,11 +4,11 @@ import sys
 
 
 def parser():
-    from ..bootstrap import DEFAULT_DB, DEFAULT_EEPROM, DEFAULT_PLATFORMS
+    from ..bootstrap import DEFAULT_DB, DEFAULT_EEPROM, DEFAULT_PLATFORMS, DEFAULT_SETTINGS, DEFAULT_OTP
     result = argparse.ArgumentParser(prog='napi-config')
-    result.add_argument('--version', action='version', version='napi-config 18')
+    result.add_argument('--version', action='version', version='napi-config 19')
     groups = result.add_subparsers(dest='group', required=True)
-    actions = {'eeprom': ['show', 'write', 'overlays', 'enable'], 'mac': ['generate'], 'board': ['info'], 'overlay': ['list'],
+    actions = {'eeprom': ['show', 'write', 'overlays', 'enable'], 'mac': ['generate', 'preview', 'assignments'], 'board': ['info'], 'overlay': ['list'],
                'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
         group_parser = groups.add_parser(group)
@@ -18,6 +18,7 @@ def parser():
             command.add_argument('--eeprom', default=DEFAULT_EEPROM)
             command.add_argument('--db', default=DEFAULT_DB)
             command.add_argument('--platforms', default=DEFAULT_PLATFORMS)
+            command.add_argument('--settings', default=DEFAULT_SETTINGS, help='MAC assignment settings YAML')
             command.add_argument('--boot-dir', default='/boot', help='Boot directory (auto-detect env file within it)')
             if group != 'tui':
                 command.add_argument('--json', action='store_true', help='Machine-readable JSON output')
@@ -26,7 +27,9 @@ def parser():
                 inputs.add_argument('--config', help='Instance JSON configuration')
                 inputs.add_argument('--profile', nargs=2, type=int, metavar=('ID', 'REV'), help='Reusable profile; requires --yes')
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm changes')
-            if group == 'mac':
+            if group == 'tui' or (group == 'mac' and name in ('generate', 'preview')):
+                command.add_argument('--otp', default=DEFAULT_OTP, help='RK3308 NVMEM path; offset 20, length 5')
+            if group == 'mac' and name == 'generate':
                 command.add_argument('--output', help='Save generated instance configuration as JSON')
             if group == 'eeprom' and name in ('overlays', 'enable'):
                 command.add_argument('--platform', default='rk3308')
@@ -56,8 +59,8 @@ def execute(args, service):
                     'warnings': plan['warnings'], 'reboot': args.reboot}
         if args.action == 'show':
             return service.document(service.read_eeprom())
-        service.write_eeprom(service.load_configuration(args.config), confirmed=args.yes)
-        return {'written': True, 'verified': True}
+        written = service.write_eeprom(service.load_configuration(args.config), confirmed=args.yes)
+        return {'written': written, 'verified': True}
     if args.group == 'boot' and args.action == 'show':
         info = service.boot_info()
         return {'path': info['path'], 'overlay_prefix': info['overlay_prefix'], 'content': info['content']}
@@ -69,15 +72,20 @@ def execute(args, service):
         if profile is None:
             raise ValueError('Board profile not found')
         cfg = service.apply_profile(service.defaults(), profile, confirmed=args.yes)
-    elif args.group == 'mac':
-        cfg = service.defaults()
+    elif args.group == 'mac' and args.action in ('generate', 'preview'):
+        cfg, _ = service.initial_configuration()
     else:
         cfg = service.read_eeprom()
     if args.group == 'mac':
-        cfg = service.generate_macs(cfg, confirmed=args.yes)
+        if args.action == 'assignments':
+            return service.mac_assignments(cfg)
+        plan = service.mac_plan(cfg)
+        if args.action == 'preview':
+            return plan
+        cfg = service.apply_mac_plan(cfg, plan, confirmed=args.yes)
         if args.output:
             service.save_configuration(args.output, cfg, confirmed=args.yes)
-        return service.document(cfg)
+        return {'configuration': service.document(cfg), 'mac_generation': plan}
     if args.group == 'overlay':
         return service.overlays(cfg)
     if args.group == 'boot':
@@ -94,13 +102,31 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         from ..bootstrap import create_service
-        service = create_service(args.eeprom, args.db, args.platforms, args.boot_dir)
+        from ..bootstrap import DEFAULT_OTP
+        service = create_service(args.eeprom, args.db, args.platforms, args.boot_dir,
+                                 getattr(args, 'otp', DEFAULT_OTP), args.settings)
         if args.group == 'tui':
             from ..tui.app import run
             return run(service)
         result = execute(args, service)
         if args.json:
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        elif args.group == 'mac' and args.action in ('preview', 'generate'):
+            plan = result if args.action == 'preview' else result['mac_generation']
+            print('RK3308 OTP ID: ' + plan['otp_id'])
+            print('MAC source: ' + plan['source'])
+            for heading, key in [('Current configuration', 'current'), ('Current EEPROM', 'eeprom_current'),
+                                 ('Generated', 'generated')]:
+                print('\n' + heading + ':')
+                if plan[key] is not None:
+                    cfg = service.configuration_from_document(plan[key])
+                    print('\n'.join(service.mac_rows(cfg)) or 'No MAC addresses')
+                else:
+                    print(plan['eeprom_error'])
+            if plan['already_matches']:
+                print('\nMAC addresses already match this SoC.')
+            if args.action == 'generate' and args.output:
+                print('\nInstance configuration saved: ' + args.output)
         else:
             for key, value in result.items():
                 print(f'{key}: {", ".join(map(str, value)) if isinstance(value, list) else value}')
