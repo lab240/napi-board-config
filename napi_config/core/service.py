@@ -1,8 +1,10 @@
 from dataclasses import replace
 import re
+import struct
+import zlib
 from .models import (BoardConfig, IF_BY_KEY, RTC_CHOICES, EEPROM_HEADER,
-                     EEPROM_SIZE, EEPROM_MAC_COUNT_OFFSET, EEPROM_MAC_OFFSET, EEPROM_CRC_OFFSET)
-from .codec import encode_config, decode_config, overlays_for, platform_conflicts, format_mac, replace_eeprom_macs
+                     EEPROM_MAC_COUNT_OFFSET, EEPROM_MAC_OFFSET, EEPROM_MAC_END, RTC_BITS)
+from .codec import encode_config, decode_config, overlays_for, platform_conflicts, format_mac, replace_eeprom_macs, eeprom_layout
 from .configuration import validate_configuration, updated, from_document, to_document, default_date
 from .mac import generate_macs, validate_otp, MAC_SOURCE, MAC_SLOT_LABELS, MacPolicy, mac_assignments, OTP_ERROR
 from .profiles import profile_to_config, config_to_profile
@@ -61,8 +63,20 @@ class BoardService:
         require_confirmation(confirmed)
         self.require_eeprom(write=True)
         self.validate(cfg)
+        self.validate_eeprom_bus(cfg)
         encoded = encode_config(cfg, self.catalog)
-        if self.eeprom.read()[:len(encoded)] == encoded:
+        existing = self.eeprom.read()
+        try:
+            stored = decode_config(existing, self.catalog)
+        except ValueError:
+            stored = None
+        if stored and cfg.format_version != stored.format_version:
+            raise ValueError('Use explicit eeprom migrate before changing EEPROM format')
+        if stored and (cfg.proc_id_type, cfg.proc_id) != (stored.proc_id_type, stored.proc_id):
+            raise ValueError('Stored processor ID cannot be changed by full write; use explicit processor rebind')
+        if cfg.proc_id_type and cfg.proc_id != validate_otp(self.otp.read_id()):
+            raise ValueError('PROCESSOR MISMATCH: configuration binding does not match current SoC')
+        if existing[:len(encoded)] == encoded:
             return False
         self.eeprom.write(encoded)
         actual = self.eeprom.read()[:len(encoded)]
@@ -83,6 +97,8 @@ class BoardService:
             otp = validate_otp(self.otp.read_id())
         except (OSError, ValueError) as exc:
             raise ValueError(OTP_ERROR) from exc
+        if cfg.proc_id_type and cfg.proc_id != otp:
+            raise ValueError('PROCESSOR MISMATCH: rebind explicitly before generating MAC addresses')
         candidate = replace(cfg, macs=generate_macs(otp), enabled=set(cfg.enabled))
         self.validate(candidate)
         try:
@@ -118,6 +134,7 @@ class BoardService:
         cfg = decode_config(data, self.catalog)
         self.validate(cfg)
         fields = EEPROM_HEADER.unpack(data[:EEPROM_HEADER.size])
+        size, crc_offset = eeprom_layout(data)
         rows = [('Format version', str(fields[1])), ('Platform', f'{cfg.platform} (ID {fields[2]})'),
                 ('Product ID', str(cfg.product_id)), ('Product revision', str(cfg.product_rev)),
                 ('Board name', cfg.board_name), ('Serial number', str(cfg.serial_number)),
@@ -128,7 +145,10 @@ class BoardService:
         rows += [('RTC on I2C1', cfg.rtc_i2c1), ('MAC count', str(len(cfg.macs)))]
         rows += [(f'MAC{i + 1}  {purpose}', format_mac(cfg.macs[i]) if i < len(cfg.macs) else 'not set')
                  for i, purpose in enumerate(MAC_SLOT_LABELS)]
-        rows += [('CRC32', f'0x{int.from_bytes(data[EEPROM_CRC_OFFSET:EEPROM_SIZE], "little"):08X}')]
+        if cfg.format_version == 3:
+            rows += [('Processor ID type', str(cfg.proc_id_type)), ('Processor ID length', str(len(cfg.proc_id))),
+                     ('Processor ID', cfg.proc_id.hex() or 'not bound')]
+        rows += [('CRC32', f'0x{int.from_bytes(data[crc_offset:size], "little"):08X}')]
         return rows
 
     def eeprom_rows(self, data):
@@ -146,7 +166,7 @@ class BoardService:
             error = 'No valid EEPROM configuration: ' + str(exc)
         proposed = self.eeprom_fields(encode_config(cfg, self.catalog))
         return self.configuration_comparison(current, proposed, 'FULL EEPROM CONFIGURATION WRITE',
-                                            'Writes all Format v2 fields. Comment and boot settings are not stored in EEPROM.', error)
+                                            'Writes all EEPROM fields. Comment and boot settings are not stored in EEPROM.', error)
 
     def configuration_comparison(self, current, proposed, title, note, error=''):
         return {'title': title, 'note': note, 'error': error,
@@ -169,16 +189,20 @@ class BoardService:
             existing = 'No valid EEPROM configuration: ' + str(exc)
         return ('FULL EEPROM CONFIGURATION WRITE\n\nCurrent EEPROM:\n' + existing
                 + '\n\nProposed EEPROM:\n' + '\n'.join(self.eeprom_rows(encode_config(cfg, self.catalog)))
-                + '\n\nWrites all Format v2 fields shown above. Comment and boot settings are not stored in EEPROM.')
+                + '\n\nWrites all EEPROM fields shown above. Comment and boot settings are not stored in EEPROM.')
 
     def mac_eeprom_plan(self, macs):
         self.require_eeprom(write=True)
-        before = self.eeprom.read()[:EEPROM_SIZE]
+        image = self.eeprom.read()
         try:
+            size, _ = eeprom_layout(image)
+            before = image[:size]
             current = decode_config(before, self.catalog)
             self.validate(current)
         except ValueError as exc:
             raise ValueError('MAC-only write requires a valid EEPROM configuration. Use Write EEPROM to initialize all fields.') from exc
+        if current.proc_id_type and validate_otp(self.otp.read_id()) != current.proc_id:
+            raise ValueError('PROCESSOR MISMATCH: rebind explicitly before updating MAC addresses')
         candidate = replace(current, macs=list(macs), enabled=set(current.enabled))
         self.validate(candidate)
         after = replace_eeprom_macs(before, macs, self.catalog)
@@ -195,22 +219,117 @@ class BoardService:
     def apply_mac_eeprom_plan(self, plan, confirmed=False):
         require_confirmation(confirmed)
         self.require_eeprom(write=True)
-        if self.eeprom.read()[:EEPROM_SIZE] != plan['before']:
+        size, crc_offset = eeprom_layout(plan['before'])
+        if self.eeprom.read()[:size] != plan['before']:
             raise ValueError('EEPROM changed since MAC write preview')
         cfg = decode_config(plan['after'], self.catalog)
         self.validate(cfg)
         if replace_eeprom_macs(plan['before'], cfg.macs, self.catalog) != plan['after']:
             raise ValueError('MAC-only plan modifies other EEPROM fields')
+        self.validate_eeprom_bus(cfg)
+        if cfg.proc_id_type and validate_otp(self.otp.read_id()) != cfg.proc_id:
+            raise ValueError('PROCESSOR MISMATCH: processor changed since MAC write preview')
         if plan['before'] == plan['after']:
             return False
         spans = [(EEPROM_MAC_COUNT_OFFSET, EEPROM_MAC_COUNT_OFFSET + 1),
-                 (EEPROM_MAC_OFFSET, EEPROM_CRC_OFFSET), (EEPROM_CRC_OFFSET, EEPROM_SIZE)]
+                 (EEPROM_MAC_OFFSET, EEPROM_MAC_END), (crc_offset, size)]
         changes = [(start, plan['after'][start:end]) for start, end in spans
                    if plan['before'][start:end] != plan['after'][start:end]]
         self.eeprom.write_ranges(changes)
-        if self.eeprom.read()[:EEPROM_SIZE] != plan['after']:
+        if self.eeprom.read()[:size] != plan['after']:
             raise OSError('EEPROM MAC read-back mismatch')
         return True
+
+    def processor_status(self, cfg=None):
+        cfg = cfg if cfg is not None else self.read_eeprom()
+        self.validate(cfg)
+        try:
+            current = validate_otp(self.otp.read_id())
+        except (ValueError, OSError) as exc:
+            return {'state': 'OTP UNAVAILABLE', 'stored_id': cfg.proc_id.hex(), 'current_id': '', 'error': str(exc)}
+        state = 'NOT BOUND' if cfg.proc_id_type == 0 else 'MATCH' if cfg.proc_id == current else 'PROCESSOR MISMATCH'
+        return {'state': state, 'stored_id': cfg.proc_id.hex(), 'current_id': current.hex(), 'error': ''}
+
+    def processor_plan(self, rebind=False):
+        cfg = self.read_eeprom()
+        if cfg.format_version != 3:
+            raise ValueError('Processor binding requires v3; migrate v2 explicitly first')
+        otp = validate_otp(self.otp.read_id())
+        if cfg.proc_id_type and cfg.proc_id != otp and not rebind:
+            raise ValueError('PROCESSOR MISMATCH: use explicit processor rebind')
+        candidate = replace(cfg, proc_id_type=1, proc_id=otp)
+        return self.instance_eeprom_plan(candidate, 'REBIND PROCESSOR' if rebind else 'BIND PROCESSOR',
+                                         'Processor binding changes; serial number and stored MAC addresses are preserved.', otp,
+                                         rebind=rebind)
+
+    def migration_plan(self):
+        cfg = self.read_eeprom()
+        if cfg.format_version != 2:
+            raise ValueError('Migration requires EEPROM format v2')
+        return self.instance_eeprom_plan(replace(cfg, format_version=3), 'MIGRATE EEPROM v2 TO v3',
+                                         'Format and CRC layout change; processor remains NOT BOUND. Serial and MACs are preserved.')
+
+    def instance_eeprom_plan(self, candidate, title, note, otp=None, rebind=False):
+        self.validate(candidate)
+        self.validate_eeprom_bus(candidate)
+        image = self.eeprom.read()
+        size, _ = eeprom_layout(image)
+        original = decode_config(image, self.catalog)
+        if original.format_version == 2:
+            if candidate.format_version != 3 or candidate.proc_id_type or otp is not None:
+                raise ValueError('Migration must leave the processor NOT BOUND')
+        elif candidate.format_version != 3 or candidate.proc_id_type != 1 or candidate.proc_id != otp:
+            raise ValueError('Binding plan does not match current processor ID')
+        elif original.proc_id_type and original.proc_id != otp and rebind is not True:
+            raise ValueError('PROCESSOR MISMATCH: use explicit processor rebind')
+        unchanged = replace(candidate, proc_id_type=original.proc_id_type,
+                            proc_id=original.proc_id, format_version=original.format_version)
+        if self.document(unchanged) != self.document(original):
+            raise ValueError('EEPROM changed while preparing instance update')
+        after = bytearray(image[:EEPROM_MAC_END])
+        after[4] = 3
+        if original.format_version == 2 and original.rtc_i2c1 != 'none':
+            mask = int.from_bytes(after[12:16], 'little')
+            mask = (mask & ~1) | (1 << RTC_BITS[original.rtc_i2c1])
+            after[12:16] = mask.to_bytes(4, 'little')
+        after += bytes([candidate.proc_id_type, len(candidate.proc_id)]) + candidate.proc_id.ljust(16, b'\x00')
+        after += struct.pack('<I', zlib.crc32(after) & 0xffffffff)
+        after = bytes(after)
+        comparison = self.configuration_comparison(dict(self.eeprom_fields(image)), self.eeprom_fields(after), title, note)
+        return {'before': image[:size], 'before_image': image, 'after': after, 'otp_id': otp,
+                'rebind': rebind,
+                'changed': image[:len(after)] != after, 'comparison': comparison}
+
+    def apply_instance_eeprom_plan(self, plan, confirmed=False):
+        require_confirmation(confirmed)
+        self.require_eeprom(write=True)
+        if self.eeprom.read() != plan['before_image']:
+            raise ValueError('EEPROM changed since preview')
+        cfg = decode_config(plan['after'], self.catalog)
+        self.validate(cfg)
+        # Reconstruct the permitted change from the original bytes, not caller fields.
+        permitted = self.instance_eeprom_plan(cfg, '', '', plan['otp_id'], rebind=plan['rebind'])
+        if permitted['after'] != plan['after']:
+            raise ValueError('Instance plan modifies unrelated EEPROM bytes')
+        if plan['otp_id'] is not None and validate_otp(self.otp.read_id()) != plan['otp_id']:
+            raise ValueError('Processor changed since binding preview')
+        if plan['otp_id'] is not None and (cfg.proc_id_type != 1 or cfg.proc_id != plan['otp_id']):
+            raise ValueError('Binding plan does not match current processor ID')
+        if plan['otp_id'] is None and cfg.proc_id_type:
+            raise ValueError('Migration must not implicitly bind a processor')
+        if not permitted['changed']:
+            return False
+        self.last_eeprom_backup = self.configurations.backup_eeprom(plan['before_image'])
+        if self.eeprom.read() != plan['before_image']:
+            raise ValueError('EEPROM changed while creating backup')
+        self.eeprom.write(plan['after'])
+        if self.eeprom.read()[:len(plan['after'])] != plan['after']:
+            raise OSError('EEPROM read-back mismatch')
+        return True
+
+    def validate_eeprom_bus(self, cfg):
+        if cfg.format_version == 3 and 'i2c1' not in cfg.enabled:
+            raise ValueError('I2C1 must be enabled before writing EEPROM format v3')
 
     def mac_strings(self, cfg):
         return [format_mac(mac) for mac in cfg.macs]
@@ -331,8 +450,8 @@ class BoardService:
                 'boot_file': info['path'], 'candidates': candidates, 'message': message}
 
     def action_status(self, cfg, action):
-        if action in ('read', 'write_eeprom'):
-            return self.eeprom_status(write=action == 'write_eeprom')
+        if action in ('read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom'):
+            return self.eeprom_status(write=action not in ('read', 'view_processor'))
         if action not in ('enable_i2c1_eeprom', 'view_boot', 'write_env'):
             return {'enabled': True, 'reason': ''}
         try:
@@ -369,7 +488,7 @@ class BoardService:
             rtc = str(i2c.get('i2c1', {}).get('rtc', 'none')).lower()
             if rtc not in RTC_CHOICES:
                 raise ValueError(f'Unsupported RTC type: {rtc}')
-            forbidden = {'serial_number', 'mfg_date', 'macs'} & profile.keys()
+            forbidden = {'serial_number', 'mfg_date', 'macs', 'proc_id', 'proc_id_type', 'proc_id_len'} & profile.keys()
             if forbidden:
                 raise ValueError('Instance data is not allowed in board profiles')
             cfg = profile_to_config(profile)
@@ -388,6 +507,8 @@ class BoardService:
         self.validate_profiles({'boards': [profile]})
         candidate = profile_to_config(profile)
         candidate.serial_number, candidate.mfg_date, candidate.macs = cfg.serial_number, cfg.mfg_date, list(cfg.macs)
+        candidate.format_version = cfg.format_version
+        candidate.proc_id_type, candidate.proc_id = cfg.proc_id_type, cfg.proc_id
         self.validate(candidate)
         return candidate
 

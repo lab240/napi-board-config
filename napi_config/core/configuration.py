@@ -1,10 +1,11 @@
 import datetime
 from dataclasses import asdict, replace
 from .models import BoardConfig, MAX_MACS, IF_BY_KEY, RTC_CHOICES, NAME_LEN
-from .codec import validate, _date_to_bytes, format_mac
+from .codec import validate, _date_to_bytes, format_mac, validate_processor_id
 
 
 def validate_configuration(cfg, catalog):
+    validate_processor_id(cfg)
     errors = validate(cfg, catalog)
     for key, limit in [('product_id', 0xffffffff), ('product_rev', 0xffff), ('serial_number', 0xffffffff)]:
         value = getattr(cfg, key)
@@ -35,6 +36,8 @@ def to_document(cfg):
     data = asdict(cfg)
     data['enabled'] = sorted(cfg.enabled)
     data['macs'] = [format_mac(mac) for mac in cfg.macs]
+    data['proc_id'] = cfg.proc_id.hex()
+    data['proc_id_len'] = len(cfg.proc_id)
     return data
 
 
@@ -53,6 +56,14 @@ def from_document(data):
     macs = data.get('macs', [])
     if not isinstance(macs, list) or any(not isinstance(value, str) for value in macs):
         raise ValueError('macs must be a list of address strings')
+    proc_id = data.get('proc_id', '')
+    if not isinstance(proc_id, str):
+        raise ValueError('proc_id must be a hexadecimal string')
+    data['proc_id'] = bytes.fromhex(proc_id)
+    if 'proc_id_len' in data:
+        length = data.pop('proc_id_len')
+        if type(length) is not int or length != len(data['proc_id']):
+            raise ValueError('proc_id_len does not match proc_id')
     data['enabled'] = set(enabled)
     data['macs'] = [bytes.fromhex(value.replace(':', '')) for value in macs]
     return BoardConfig(**data)

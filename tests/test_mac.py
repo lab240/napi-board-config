@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from napi_config.bootstrap import create_service
 from napi_config.core.codec import encode_config, decode_config
 from napi_config.core.mac import generate_macs, MacPolicy, MacSlot, mac_assignments, OTP_ERROR
-from napi_config.core.models import BoardConfig
+from napi_config.core.models import BoardConfig, EEPROM_SIZE, EEPROM_CRC_OFFSET
 from napi_config.hardware.otp import LinuxOtp
 from napi_config.tui.app import UI
 
@@ -90,12 +90,12 @@ class MacTests(unittest.TestCase):
                     reader.read_id()
 
     def test_exact_eeprom_offsets_crc_and_no_duplicate_write(self):
-        cfg = self.service.generate_macs(BoardConfig(), confirmed=True)
+        cfg = self.service.generate_macs(BoardConfig(enabled={'i2c1'}), confirmed=True)
         encoded = encode_config(cfg, self.service.catalog)
         self.assertEqual(encoded[0x17], 8)
         for slot, mac in enumerate(cfg.macs):
             self.assertEqual(encoded[0x38 + slot * 6:0x3e + slot * 6], mac)
-        self.assertEqual(struct.unpack('<I', encoded[0x68:0x6c])[0], zlib.crc32(encoded[:0x68]))
+        self.assertEqual(struct.unpack('<I', encoded[EEPROM_CRC_OFFSET:EEPROM_SIZE])[0], zlib.crc32(encoded[:EEPROM_CRC_OFFSET]))
         self.assertEqual(decode_config(encoded, self.service.catalog), cfg)
         self.assertTrue(self.service.write_eeprom(cfg, confirmed=True))
         with patch.object(self.service.eeprom, 'write') as write:
@@ -145,7 +145,7 @@ class MacTests(unittest.TestCase):
                 MacPolicy.from_document({'set_native_eth_mac': value})
 
     def test_preview_preserves_stored_macs_after_defaults_and_rejects_stale_config(self):
-        stored = BoardConfig(macs=[bytes.fromhex('02aabbccddee')])
+        stored = BoardConfig(macs=[bytes.fromhex('02aabbccddee')], enabled={'i2c1'})
         self.service.write_eeprom(stored, confirmed=True)
         cfg = BoardConfig()
         plan = self.service.mac_plan(cfg)
@@ -203,7 +203,7 @@ class MacOnlyWriteTests(unittest.TestCase):
         mask = int.from_bytes(blob[12:16], 'little') | (1 << 31)
         blob[12:16] = mask.to_bytes(4, 'little')
         blob[55] = 0x7e
-        blob[104:108] = struct.pack('<I', zlib.crc32(blob[:104]))
+        blob[EEPROM_CRC_OFFSET:EEPROM_SIZE] = struct.pack('<I', zlib.crc32(blob[:EEPROM_CRC_OFFSET]))
         self.eeprom.write_bytes(blob + b'T' * (256 - len(blob)))
         return cfg
 
@@ -218,10 +218,10 @@ class MacOnlyWriteTests(unittest.TestCase):
         with patch.object(self.service.eeprom, 'write_ranges', wraps=self.service.eeprom.write_ranges) as write:
             self.assertTrue(self.service.apply_mac_eeprom_plan(plan, confirmed=True))
             self.assertEqual([(offset, len(data)) for offset, data in write.call_args.args[0]],
-                             [(0x17, 1), (0x38, 48), (0x68, 4)])
+                             [(0x17, 1), (0x38, 48), (EEPROM_CRC_OFFSET, 4)])
         after = self.eeprom.read_bytes()
         for index in range(256):
-            if index != 0x17 and not 0x38 <= index < 0x6c:
+            if index != 0x17 and not (0x38 <= index < 0x68 or EEPROM_CRC_OFFSET <= index < EEPROM_SIZE):
                 self.assertEqual(after[index], before[index], index)
         actual = self.service.read_eeprom()
         actual.macs = original.macs
@@ -234,7 +234,7 @@ class MacOnlyWriteTests(unittest.TestCase):
     def test_full_write_still_updates_all_configuration_fields(self):
         self.initial_configuration()
         cfg = BoardConfig(product_id=99, product_rev=8, board_name='New board',
-                          serial_number=222, mfg_date='2025-01-02', enabled={'uart4'},
+                          serial_number=222, mfg_date='2025-01-02', enabled={'uart4', 'i2c1'},
                           macs=generate_macs(bytes.fromhex('0235221703')))
         text = self.service.eeprom_preview(cfg)
         for field in ('Product ID: 99', 'Product revision: 8', 'Board name: New board',
@@ -243,7 +243,7 @@ class MacOnlyWriteTests(unittest.TestCase):
             self.assertIn(field, text)
         self.assertTrue(self.service.write_eeprom(cfg, confirmed=True))
         self.assertEqual(self.service.read_eeprom(), cfg)
-        self.assertEqual(self.eeprom.read_bytes()[108:], b'T' * 148)
+        self.assertEqual(self.eeprom.read_bytes()[EEPROM_SIZE:], b'T' * (256-EEPROM_SIZE))
 
     def test_invalid_eeprom_stale_plan_tamper_and_readback_are_rejected(self):
         macs = generate_macs(bytes.fromhex('0235221703'))
@@ -261,7 +261,7 @@ class MacOnlyWriteTests(unittest.TestCase):
         tampered = dict(plan)
         payload = bytearray(plan['after'])
         payload[16] ^= 1
-        payload[104:108] = struct.pack('<I', zlib.crc32(payload[:104]))
+        payload[EEPROM_CRC_OFFSET:EEPROM_SIZE] = struct.pack('<I', zlib.crc32(payload[:EEPROM_CRC_OFFSET]))
         tampered['after'] = bytes(payload)
         with self.assertRaisesRegex(ValueError, 'modifies other EEPROM fields'):
             self.service.apply_mac_eeprom_plan(tampered, confirmed=True)

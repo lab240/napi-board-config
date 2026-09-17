@@ -21,5 +21,6 @@ DEFAULT_SETTINGS = str(ROOT / 'settings.yaml')
 def create_service(eeprom_path=DEFAULT_EEPROM, db_path=DEFAULT_DB, platforms_path=DEFAULT_PLATFORMS, boot_dir='/boot',
                    otp_path=DEFAULT_OTP, settings_path=DEFAULT_SETTINGS):
     return BoardService(PlatformCatalog(load_platforms(platforms_path)), LinuxEeprom(eeprom_path),
-                        YamlProfiles(db_path), LinuxBootFiles(boot_dir), JsonConfigurations(), LinuxProbe(eeprom_path),
+                        YamlProfiles(db_path), LinuxBootFiles(boot_dir),
+                        JsonConfigurations(Path(db_path).parent / 'eeprom-backups'), LinuxProbe(eeprom_path),
                         ProfileDownload(), LinuxOtp(otp_path), MacPolicy.from_document(load_settings(settings_path)))

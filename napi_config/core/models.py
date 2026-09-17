@@ -2,11 +2,15 @@ import struct
 from dataclasses import dataclass, field
 
 MAGIC = b"NAPI"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 NAME_LEN = 32
 MAX_MACS = 8
 EEPROM_HEADER = struct.Struct("<4sBBIHIIBBBB32s")
-EEPROM_SIZE = EEPROM_HEADER.size + MAX_MACS * 6 + 4
+EEPROM_SIZE = 126
+EEPROM_V2_SIZE = 108
+EEPROM_MAC_END = 104
+EEPROM_PROC_OFFSET = 104
+EEPROM_PROC_SIZE = 18
 EEPROM_MAC_COUNT_OFFSET = 0x17
 EEPROM_MAC_OFFSET = EEPROM_HEADER.size
 EEPROM_CRC_OFFSET = EEPROM_SIZE - 4
@@ -46,6 +50,7 @@ LEGACY_RTC_BIT = 0
 
 @dataclass
 class BoardConfig:
+    format_version: int = FORMAT_VERSION
     platform: str = "rk3308"
     product_id: int = 0
     product_rev: int = 1
@@ -56,6 +61,8 @@ class BoardConfig:
     serial_number: int = 0
     mfg_date: str = ""
     macs: list[bytes] = field(default_factory=list)
+    proc_id_type: int = 0
+    proc_id: bytes = b""
 
     def mask(self) -> int:
         enabled = set(self.enabled)

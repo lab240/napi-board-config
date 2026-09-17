@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napi-config"
-version = "19.0.0"
+version = "20.0.0"
 description = "NAPI board configuration with shared core, TUI and CLI"
 requires-python = ">=3.9"
 dependencies = ["PyYAML>=5.4"]

@@ -22,6 +22,7 @@ class UI:
         self.stdscr = stdscr
         self.service = service
         self.cfg, initial_status = service.initial_configuration()
+        self.processor_info = service.processor_status(self.cfg)
         self.action_states = {}
         self.boot_summary = "Not detected"
         self.blob = None
@@ -39,10 +40,15 @@ class UI:
             ("rtc", "rtc_enabled"),
             ("field", "rtc_type"),
             ("instance", "serial_number"),
+            ("instance", "processor_binding"),
             ("instance", "mfg_date"),
             ("instance", "mac_count"),
             ("field", "env_target"),
             ("action", "enable_i2c1_eeprom"),
+            ("action", "view_processor"),
+            ("action", "bind_processor"),
+            ("action", "rebind_processor"),
+            ("action", "migrate_eeprom"),
             ("action", "quit"),
         ]
 
@@ -107,6 +113,10 @@ class UI:
             "generate_macs": "[ Generate MACs ]",
             "enable_i2c1_eeprom": "[ Add EEPROM overlay and reboot ]",
             "view_boot": "[ View current boot config ]",
+            "view_processor": "[ View processor binding ]",
+            "bind_processor": "[ Bind processor ]",
+            "rebind_processor": "[ Rebind processor ]",
+            "migrate_eeprom": "[ Migrate EEPROM v2 to v3 ]",
             "quit": "[ Quit ]",
         }[key]
         state = getattr(self, 'action_states', {}).get(key, {})
@@ -130,6 +140,8 @@ class UI:
                 rtc = self.cfg.rtc_i2c1.upper() if self.cfg.rtc_i2c1 != "none" else "-"
                 return f"    RTC type : {rtc}"
         if kind == "instance":
+            if key == 'processor_binding':
+                return 'Processor    : ' + self.processor_info['state']
             if key == "serial_number":
                 return f"Serial number: {self.cfg.serial_number:08d}"
             if key == "mfg_date":
@@ -150,7 +162,8 @@ class UI:
 
     def draw(self):
         self.action_states = {key: self.service.action_status(self.cfg, key)
-                              for key in ('read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env')}
+                              for key in ('read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env',
+                                          'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom')}
         try:
             info = self.service.boot_info()
             self.boot_summary = info['path'] + ' (prefix: ' + (info['overlay_prefix'] or 'none') + ')'
@@ -168,7 +181,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v19 "
+        title = " NAPI Board Config v20 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -295,6 +308,10 @@ class UI:
             "generate_macs":self.generate_macs,
             "view_macs":self.view_macs,
             "enable_i2c1_eeprom":self.enable_i2c1_eeprom,
+            "view_processor":self.view_processor,
+            "bind_processor":lambda: self.change_instance('bind'),
+            "rebind_processor":lambda: self.change_instance('rebind'),
+            "migrate_eeprom":lambda: self.change_instance('migrate'),
         }.get(key,lambda:None)()
         return key=="quit"
 
@@ -433,6 +450,9 @@ class UI:
                 position = (position-1) % len(candidates)
 
     def edit_instance(self, key):
+        if key == 'processor_binding':
+            self.view_processor()
+            return
         if key == 'mac_count':
             self.view_macs()
             return
@@ -507,6 +527,33 @@ class UI:
     def view_macs(self):
         rows = self.service.mac_rows(self.cfg)
         self.view_text('MAC addresses\n\n' + '\n'.join(rows) if rows else 'No MAC addresses generated')
+
+    def view_processor(self):
+        def operation():
+            info = self.service.processor_status()
+            self.view_text('Processor binding: ' + info['state']
+                           + '\nStored ID: ' + (info['stored_id'] or 'not bound')
+                           + '\nCurrent OTP ID: ' + (info['current_id'] or 'unavailable')
+                           + ('\n' + info['error'] if info['error'] else ''))
+        self.perform(operation)
+
+    def change_instance(self, action):
+        def operation():
+            plan = (self.service.migration_plan() if action == 'migrate'
+                    else self.service.processor_plan(rebind=action == 'rebind'))
+            if not plan['changed']:
+                self.view_text('Processor binding already matches; no EEPROM write needed.')
+                return False
+            if not self.view_comparison(plan['comparison'], action_label=action):
+                self.status = 'View only; EEPROM unchanged'
+                return False
+            if not self.confirm_yes(plan['comparison']['title'] + '? EEPROM will be written; MACs and serial are preserved.'):
+                self.status = 'EEPROM change cancelled'
+                return False
+            self.service.apply_instance_eeprom_plan(plan, confirmed=True)
+            self.status = 'EEPROM verified; backup: ' + self.service.last_eeprom_backup
+            return self.service.read_eeprom()
+        self.perform(operation, update=True)
 
     def load_defaults(self):
         if self.confirm_yes('Load defaults? Board configuration and instance data will be reset.'):
@@ -800,6 +847,7 @@ class UI:
                 return
             if update:
                 self.cfg = result
+                self.processor_info = self.service.processor_status(self.cfg)
                 self.blob = None
             self.status = 'Operation completed'
         except (ValueError, TypeError, OSError, KeyError) as exc:

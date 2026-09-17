@@ -6,9 +6,11 @@ import sys
 def parser():
     from ..bootstrap import DEFAULT_DB, DEFAULT_EEPROM, DEFAULT_PLATFORMS, DEFAULT_SETTINGS, DEFAULT_OTP
     result = argparse.ArgumentParser(prog='napi-config')
-    result.add_argument('--version', action='version', version='napi-config 19')
+    result.add_argument('--version', action='version', version='napi-config 20')
     groups = result.add_subparsers(dest='group', required=True)
-    actions = {'eeprom': ['show', 'preview', 'write', 'overlays', 'enable'], 'mac': ['generate', 'preview', 'write', 'assignments'], 'board': ['info'], 'overlay': ['list'],
+    actions = {'eeprom': ['show', 'preview', 'write', 'migrate', 'overlays', 'enable'],
+               'processor': ['status', 'bind', 'rebind'],
+               'mac': ['generate', 'preview', 'write', 'assignments'], 'board': ['info'], 'overlay': ['list'],
                'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
         group_parser = groups.add_parser(group)
@@ -27,8 +29,11 @@ def parser():
                 inputs.add_argument('--config', help='Instance JSON configuration')
                 inputs.add_argument('--profile', nargs=2, type=int, metavar=('ID', 'REV'), help='Reusable profile; requires --yes')
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm changes')
-            if group == 'tui' or (group == 'mac' and name in ('generate', 'preview')):
+            if group in ('tui', 'processor', 'mac') or (group == 'eeprom' and name == 'write'):
                 command.add_argument('--otp', default=DEFAULT_OTP, help='RK3308 NVMEM path; offset 20, length 5')
+            if (group == 'processor' and name != 'status') or (group == 'eeprom' and name == 'migrate'):
+                command.add_argument('--preview', action='store_true', help='Show proposed changes without writing')
+                command.add_argument('--yes', action='store_true', help='Explicitly confirm EEPROM change')
             if group == 'mac' and name == 'generate':
                 command.add_argument('--output', help='Save generated instance configuration as JSON')
             if group == 'eeprom' and name in ('overlays', 'enable'):
@@ -45,6 +50,16 @@ def parser():
 
 
 def execute(args, service):
+    if args.group == 'processor' or (args.group == 'eeprom' and args.action == 'migrate'):
+        if args.group == 'processor' and args.action == 'status':
+            return service.processor_status()
+        plan = (service.migration_plan() if args.group == 'eeprom'
+                else service.processor_plan(rebind=args.action == 'rebind'))
+        if args.preview:
+            return {'preview': plan['comparison'], 'changed': plan['changed']}
+        written = service.apply_instance_eeprom_plan(plan, confirmed=args.yes)
+        return {'written': written, 'verified': True,
+                'backup': getattr(service, 'last_eeprom_backup', None)}
     if args.group == 'hardware':
         return service.detect()
     if args.group == 'eeprom':
@@ -118,6 +133,15 @@ def main(argv=None):
         result = execute(args, service)
         if args.json:
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        elif (args.group == 'processor' and args.action != 'status') or (args.group == 'eeprom' and args.action == 'migrate'):
+            if args.preview:
+                comparison = result['preview']
+                print(comparison['title'] + '\n' + comparison['note'])
+                print(f'{"Field":<28} {"Proposed / new":<35} Current / old')
+                for row in comparison['rows']:
+                    print(f'{row["field"]:<28} {row["proposed"]:<35} {row["current"]}')
+            else:
+                print(json.dumps(result, ensure_ascii=False))
         elif args.group == 'mac' and args.action in ('preview', 'generate'):
             plan = result if args.action == 'preview' else result['mac_generation']
             print('RK3308 OTP ID: ' + plan['otp_id'])

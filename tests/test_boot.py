@@ -98,7 +98,7 @@ class BootTests(unittest.TestCase):
         self.service.apply_boot_plan.assert_not_called()
 
     def test_startup_loads_valid_eeprom_and_falls_back_on_bad_crc(self):
-        cfg = BoardConfig(board_name='From EEPROM', serial_number=12, mfg_date='2026-09-16')
+        cfg = BoardConfig(board_name='From EEPROM', serial_number=12, mfg_date='2026-09-16', enabled={'i2c1'})
         self.service.write_eeprom(cfg, confirmed=True)
         ui = UI(Mock(), self.service)
         self.assertEqual(ui.cfg, cfg)
@@ -106,7 +106,7 @@ class BootTests(unittest.TestCase):
         self.eeprom.write_bytes(b'\xff' * 256)
         ui = UI(Mock(), self.service)
         self.assertEqual(ui.cfg, self.service.defaults())
-        self.assertIn('CRC mismatch', ui.status)
+        self.assertIn('Bad magic', ui.status)
         self.eeprom.unlink()
         ui = UI(Mock(), self.service)
         self.assertIn('EEPROM unavailable / not configured', ui.status)

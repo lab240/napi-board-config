@@ -2,7 +2,7 @@
 
 ## Saved Project Context
 
-Read `MEMORY.md` before continuing work. It records the v19 architecture,
+Read `MEMORY.md` before continuing work. It records the current architecture,
 agreed EEPROM/overlay behavior, deployment, validation and pending hardware checks.
 Some legacy structure/testing notes below predate the refactor; use the current
 code, `README.md` and `ARCHITECTURE.md` for the actual project layout and test runner.

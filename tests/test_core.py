@@ -21,7 +21,7 @@ class CoreTests(unittest.TestCase):
         self.service = create_service(str(self.eeprom), str(self.path / 'boards.yaml'))
         self.service.otp = Mock()
         self.service.otp.read_id.return_value = bytes.fromhex('0235221703')
-        self.cfg = BoardConfig(serial_number=0xffffffff, mfg_date='2255-12-31')
+        self.cfg = BoardConfig(serial_number=0xffffffff, mfg_date='2255-12-31', enabled={'i2c1'})
 
     def test_round_trip_and_crc(self):
         cfg = self.service.generate_macs(self.cfg, confirmed=True)
@@ -39,7 +39,7 @@ class CoreTests(unittest.TestCase):
         import struct, zlib
         header = struct.pack('<4sBBIHIIBBBB32s', b'NAPI', 2, 1, 0, 1, 1 << 10, 0, 0, 0, 0, 0, b'NAPI Board')
         body = header + bytes(48)
-        self.assertEqual(encode_config(BoardConfig(enabled={'i2c1'}), self.service.catalog), body + struct.pack('<I', zlib.crc32(body)))
+        self.assertEqual(encode_config(BoardConfig(format_version=2, enabled={'i2c1'}), self.service.catalog), body + struct.pack('<I', zlib.crc32(body)))
 
     def test_confirmation_prevents_writes(self):
         self.service.eeprom = Mock()

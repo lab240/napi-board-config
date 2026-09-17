@@ -54,6 +54,23 @@ class YamlProfiles:
 
 
 class JsonConfigurations:
+    def __init__(self, backup_dir):
+        self.backup_dir = Path(backup_dir)
+
+    def backup_eeprom(self, data):
+        import os
+        import tempfile
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='wb', dir=self.backup_dir,
+                                         prefix='eeprom-', suffix='.bin', delete=False) as stream:
+            path = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.read_bytes() != data:
+            raise OSError('EEPROM backup verification failed')
+        return str(path)
+
     def load(self, path):
         return json.loads(Path(path).read_text(encoding='utf-8'))
 

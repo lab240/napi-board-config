@@ -140,7 +140,7 @@ class CliTests(unittest.TestCase):
             eeprom = root / 'eeprom'
             eeprom.write_bytes(b'\xff' * 256)
             service = create_service(eeprom_path=str(eeprom))
-            stored = BoardConfig(serial_number=100, board_name='Stored board', enabled={'uart4'})
+            stored = BoardConfig(serial_number=100, board_name='Stored board', enabled={'uart4', 'i2c1'})
             service.write_eeprom(stored, confirmed=True)
             before = eeprom.read_bytes()
             cfg = BoardConfig(serial_number=999, board_name='Unsaved board',
@@ -159,7 +159,7 @@ class CliTests(unittest.TestCase):
             actual = service.read_eeprom()
             self.assertEqual(actual.serial_number, 100)
             self.assertEqual(actual.board_name, 'Stored board')
-            self.assertEqual(actual.enabled, {'uart4'})
+            self.assertEqual(actual.enabled, {'uart4', 'i2c1'})
             self.assertEqual(actual.macs, cfg.macs)
             again = self.run_cli('mac', 'write', '--yes', *common)
             self.assertEqual(again.returncode, 0, again.stderr)
@@ -172,4 +172,4 @@ class CliTests(unittest.TestCase):
             result = self.run_cli('eeprom', 'show', '--eeprom', str(path), '--json')
             self.assertEqual(result.returncode, 1)
             self.assertEqual(result.stdout, '')
-            self.assertIn('CRC mismatch', result.stderr)
+            self.assertIn('Bad magic', result.stderr)
