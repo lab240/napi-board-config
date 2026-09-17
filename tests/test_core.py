@@ -1,3 +1,4 @@
+from dataclasses import replace
 import ast
 import tempfile
 import unittest
@@ -52,7 +53,7 @@ class CoreTests(unittest.TestCase):
 
     def test_write_preserves_tail_and_verifies(self):
         self.service.write_eeprom(self.cfg, confirmed=True)
-        self.assertEqual(self.service.read_eeprom(), self.cfg)
+        self.assertEqual(self.service.read_eeprom(), replace(self.cfg, proc_id_type=1, proc_id=bytes.fromhex("0235221703")))
         size = len(encode_config(self.cfg, self.service.catalog))
         self.assertEqual(self.eeprom.read_bytes()[size:], b'\xff' * (256-size))
 

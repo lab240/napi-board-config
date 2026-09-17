@@ -72,18 +72,35 @@ class BoardService:
             stored = None
         if stored and cfg.format_version != stored.format_version:
             raise ValueError('Use explicit eeprom migrate before changing EEPROM format')
-        if stored and (cfg.proc_id_type, cfg.proc_id) != (stored.proc_id_type, stored.proc_id):
+        if stored and stored.proc_id_type and (cfg.proc_id_type, cfg.proc_id) != (stored.proc_id_type, stored.proc_id):
             raise ValueError('Stored processor ID cannot be changed by full write; use explicit processor rebind')
         if cfg.proc_id_type and cfg.proc_id != validate_otp(self.otp.read_id()):
             raise ValueError('PROCESSOR MISMATCH: configuration binding does not match current SoC')
         if existing[:len(encoded)] == encoded:
             return False
+        self.last_eeprom_backup = self.configurations.backup_eeprom(existing)
+        if self.eeprom.read() != existing:
+            raise ValueError('EEPROM changed while creating backup')
         self.eeprom.write(encoded)
         actual = self.eeprom.read()[:len(encoded)]
         if actual != encoded:
             raise OSError('EEPROM read-back mismatch')
         decode_config(actual, self.catalog)
         return True
+
+    def eeprom_write_plan(self, cfg):
+        self.require_eeprom()
+        image = self.eeprom.read()
+        candidate = self.eeprom_write_configuration(cfg, image)
+        self.validate(candidate)
+        return {'before_image': image, 'configuration': candidate,
+                'comparison': self.eeprom_comparison(candidate)}
+
+    def apply_eeprom_write_plan(self, plan, confirmed=False):
+        require_confirmation(confirmed)
+        if self.eeprom.read() != plan['before_image']:
+            raise ValueError('EEPROM changed since full write preview')
+        return self.write_eeprom(plan['configuration'], confirmed=True)
 
     def eeprom_write_configuration(self, cfg, image=None):
         if image is None:
@@ -92,7 +109,15 @@ class BoardService:
             except OSError:
                 return cfg
         if len(image) == 256 and image in (bytes(256), b'\xff' * 256):
-            return replace(cfg, format_version=3)
+            cfg = replace(cfg, format_version=3)
+        if cfg.format_version == 3 and not cfg.proc_id_type:
+            try:
+                stored = decode_config(image, self.catalog)
+            except ValueError:
+                stored = None
+            if stored and stored.proc_id_type:
+                return replace(cfg, proc_id_type=stored.proc_id_type, proc_id=stored.proc_id)
+            cfg = replace(cfg, proc_id_type=1, proc_id=validate_otp(self.otp.read_id()))
         return cfg
 
     def generate_macs(self, cfg, confirmed=False):
@@ -401,6 +426,42 @@ class BoardService:
     def mac_strings(self, cfg):
         return [format_mac(mac) for mac in cfg.macs]
 
+    def reset_processor_configuration(self, cfg):
+        return replace(cfg, proc_id_type=0, proc_id=b'')
+
+    def reset_processor_plan(self):
+        self.require_eeprom()
+        image = self.eeprom.read()
+        cfg = decode_config(image, self.catalog)
+        if cfg.format_version != 3 or len(image) != 256:
+            raise ValueError('Processor ID reset requires a complete v3 EEPROM image')
+        body = image[:104] + bytes(18)
+        after = body + struct.pack('<I', zlib.crc32(body)) + image[126:]
+        comparison = self.configuration_comparison(dict(self.eeprom_fields(image)),
+            self.eeprom_fields(after), 'RESET PROCESSOR ID',
+            'Only processor binding is cleared. Serial, date, MACs and board settings are preserved.')
+        return {'before_image': image, 'after': after, 'changed': image != after,
+                'comparison': comparison}
+
+    def apply_reset_processor_plan(self, plan, confirmed=False):
+        require_confirmation(confirmed)
+        self.require_eeprom(write=True)
+        current = self.reset_processor_plan()
+        if current['before_image'] != plan['before_image']:
+            raise ValueError('EEPROM changed since processor reset preview')
+        if current['after'] != plan['after']:
+            raise ValueError('Invalid processor reset plan')
+        self.last_eeprom_backup = None
+        if not current['changed']:
+            return False
+        self.last_eeprom_backup = self.configurations.backup_eeprom(current['before_image'])
+        if self.eeprom.read() != current['before_image']:
+            raise ValueError('EEPROM changed while creating backup')
+        self.eeprom.write_ranges([(104, current['after'][104:122]), (122, current['after'][122:126])])
+        if self.eeprom.read() != current['after']:
+            raise OSError('Processor reset read-back mismatch')
+        return True
+
     def reset_eeprom_plan(self):
         self.require_eeprom()
         image = self.eeprom.read()
@@ -559,7 +620,7 @@ class BoardService:
 
     def action_status(self, cfg, action):
         if action in ('read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom',
-                      'write_processor', 'reset_eeprom'):
+                      'write_processor', 'reset_eeprom', 'reset_processor'):
             return self.eeprom_status(write=action not in ('read', 'view_processor'))
         if action not in ('enable_i2c1_eeprom', 'view_boot', 'write_env'):
             return {'enabled': True, 'reason': ''}

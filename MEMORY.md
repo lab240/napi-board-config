@@ -370,3 +370,40 @@ Boot SHA256 остался `063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7
   processor initialization preview, прокрутка до ID/CRC, отдельный yes отменён no.
   SHA256 EEPROM/boot после всей проверки совпали с приведёнными выше; reboot
   и реальные записи не выполнялись. GitHub push не выполнялся.
+
+## ACTIONS / SERVICE и обычная запись processor ID (v20)
+
+Этот раздел заменяет прежнее меню с View and write processor ID.
+- ACTIONS: Load EEPROM, Write EEPROM, Load/Save/Delete board from local DB,
+  Load DB from GitHub, View and generate MACs, View and write boot config.
+- SERVICE: Load defaults, Reset EEPROM, Reset processor ID,
+  Add EEPROM overlay and reboot, Quit. При ширине >=80 списки рядом;
+  при меньшей ширине SERVICE после полей конфигурации. Left/right переключают
+  списки, up/down циклические: первый Load EEPROM вверх → Quit, Quit вниз → первый.
+- View and generate MACs сначала показывает текущие MAC и OTP. Enter предлагает
+  генерацию с отдельным preview/yes; затем сохраняется предложение MAC-only
+  записи с другим preview/yes. Отмена просмотра сохраняет RAM/EEPROM.
+- Полная Write EEPROM для v3 без привязки включает текущий OTP в preview,
+  после yes записывает его вместе с остальными полями. Существующая привязка
+  сохраняется, mismatch блокирует полную запись. Отсутствующий OTP блокирует
+  создание привязки без fallback; I2C1 по-прежнему независима.
+- Core eeprom_write_plan фиксирует candidate и исходный образ. Apply отклоняет
+  изменения EEPROM после preview и повторно проверяет OTP; полная запись
+  теперь также делает бинарный backup и stale-check перед write/read-back.
+- Reset processor ID: только 18 байт 0x68..0x79 очищаются, CRC пересчитывается
+  и пишется последним. Все остальные байты, включая serial/MAC/reserved,
+  сохраняются. План/yes/backup/stale-check/read-back общие для TUI и CLI
+  processor reset --preview/--yes. Валидная полная v3 обязательна.
+- Смена процессора: Reset processor ID → Write EEPROM. При необходимости
+  новые MAC генерируются отдельно. RAM draft после сброса ID сохраняет остальные
+  поля; Reset EEPROM по-прежнему не сбрасывает текущие настройки меню.
+- Предыдущая установка сохранена: /root/v20-before-actions-65ee776.
+- Проверка NAPI-C: TUI 120x40 (два списка, полный new/current preview с OTP,
+  просмотр/генерация MAC отменены); TUI 60x24 (цикл, прокрутка, reset ID preview
+  без записи). Локально 85 тестов прошли. Тесты на плате используют временные файлы.
+- SHA256 реальных EEPROM/boot до и после ручной проверки совпали:
+  EEPROM 6284fa4f1b80e2a8962a89828d1beeedf11f3d4420f4a2af92ec40228ab47b7f;
+  boot 063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7aaa386c33015.
+  Реальную EEPROM/boot не записывали, reboot и GitHub push не выполняли.
+- Итог: 85 тестов также прошли на NAPI-C (72.6 с), CLI processor reset
+  --preview подтвердил отсутствие изменений для уже пустой привязки.

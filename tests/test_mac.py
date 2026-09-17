@@ -1,3 +1,4 @@
+from dataclasses import replace
 import errno
 import fcntl
 import struct
@@ -155,7 +156,7 @@ class MacTests(unittest.TestCase):
         changed = BoardConfig(serial_number=1)
         with self.assertRaisesRegex(ValueError, 'changed since MAC preview'):
             self.service.apply_mac_plan(changed, plan, confirmed=True)
-        self.assertEqual(self.service.read_eeprom(), stored)
+        self.assertEqual(self.service.read_eeprom(), replace(stored, proc_id_type=1, proc_id=bytes.fromhex("0235221703")))
 
     def test_tui_eeprom_write_requires_preview_and_yes(self):
         cfg = self.service.generate_macs(BoardConfig(), confirmed=True)
@@ -174,7 +175,7 @@ class MacTests(unittest.TestCase):
             write.assert_not_called()
             ui.confirm_yes.return_value = True
             ui.write_eeprom()
-            write.assert_called_once_with(cfg, confirmed=True)
+            write.assert_called_once_with(replace(cfg, proc_id_type=1, proc_id=bytes.fromhex("0235221703")), confirmed=True)
         comparison, metadata = ui.view_comparison.call_args.args
         self.assertIn('RK3308 OTP ID: 0235221703', metadata)
         fields = {row['field']: row['proposed'] for row in comparison['rows']}
@@ -242,7 +243,7 @@ class MacOnlyWriteTests(unittest.TestCase):
                       'UART4: enabled', 'RTC on I2C1: none', 'MAC count: 8', 'CRC32:'):
             self.assertIn(field, text)
         self.assertTrue(self.service.write_eeprom(cfg, confirmed=True))
-        self.assertEqual(self.service.read_eeprom(), cfg)
+        self.assertEqual(self.service.read_eeprom(), replace(cfg, proc_id_type=1, proc_id=bytes.fromhex("0235221703")))
         self.assertEqual(self.eeprom.read_bytes()[EEPROM_SIZE:], b'T' * (256-EEPROM_SIZE))
 
     def test_invalid_eeprom_stale_plan_tamper_and_readback_are_rejected(self):

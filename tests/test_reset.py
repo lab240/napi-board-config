@@ -18,6 +18,98 @@ class ResetTests(unittest.TestCase):
     def store(self, cfg):
         return fixtures.EepromV3Tests.store(self, cfg)
 
+    def test_reset_processor_preserves_raw_fields_and_reserved_area(self):
+        before = self.store(self.cfg)
+        plan = self.service.reset_processor_plan()
+        with self.assertRaisesRegex(ValueError, 'confirmation'):
+            self.service.apply_reset_processor_plan(plan)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.service.apply_reset_processor_plan(plan, confirmed=True)
+        after = self.path.read_bytes()
+        self.assertEqual(after[:104], before[:104])
+        self.assertEqual(after[104:122], bytes(18))
+        self.assertEqual(after[126:], before[126:])
+        self.assertEqual(self.service.read_eeprom(), replace(self.cfg, proc_id_type=0, proc_id=b''))
+        self.assertEqual(Path(self.service.last_eeprom_backup).read_bytes(), before)
+        self.assertFalse(self.service.apply_reset_processor_plan(self.service.reset_processor_plan(), confirmed=True))
+        self.otp_path.write_bytes(bytes(20) + bytes.fromhex('090b131d04'))
+        candidate = self.service.eeprom_write_configuration(self.service.read_eeprom())
+        self.assertEqual(candidate.proc_id.hex(), '090b131d04')
+        self.service.write_eeprom(candidate, confirmed=True)
+        self.assertEqual(self.service.read_eeprom(), replace(self.cfg, proc_id=bytes.fromhex('090b131d04')))
+
+    def test_reset_processor_rejects_stale_tampered_and_failed_backup(self):
+        before = self.store(self.cfg)
+        plan = self.service.reset_processor_plan()
+        with self.assertRaisesRegex(ValueError, 'Invalid processor reset'):
+            self.service.apply_reset_processor_plan(dict(plan, after=bytes(256)), confirmed=True)
+        with patch.object(self.service.configurations, 'backup_eeprom', side_effect=OSError('backup failed')):
+            with self.assertRaisesRegex(OSError, 'backup failed'):
+                self.service.apply_reset_processor_plan(plan, confirmed=True)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.store(replace(self.cfg, serial_number=77))
+        with self.assertRaisesRegex(ValueError, 'changed since processor reset'):
+            self.service.apply_reset_processor_plan(plan, confirmed=True)
+
+    def test_missing_otp_prevents_full_write_and_view_mac_cancel_preserves_draft(self):
+        self.path.write_bytes(bytes(256))
+        self.service.otp = Mock()
+        self.service.otp.read_id.side_effect = ValueError('OTP unavailable')
+        with self.assertRaisesRegex(ValueError, 'OTP unavailable'):
+            self.service.write_eeprom(self.service.defaults(), confirmed=True)
+        self.assertEqual(self.path.read_bytes(), bytes(256))
+        ui = UI(Mock(), self.service)
+        draft = ui.cfg
+        ui.view_text = Mock(return_value=False)
+        ui.generate_macs = Mock()
+        ui.view_generate_macs()
+        ui.generate_macs.assert_not_called()
+        self.assertEqual(ui.cfg, draft)
+
+    def test_full_preview_contains_otp_and_rejects_changed_soc_or_eeprom(self):
+        self.path.write_bytes(bytes(256))
+        plan = self.service.eeprom_write_plan(self.service.defaults())
+        self.assertEqual(plan['configuration'].proc_id, self.otp)
+        self.otp_path.write_bytes(bytes(20) + bytes.fromhex('090b131d04'))
+        with self.assertRaisesRegex(ValueError, 'PROCESSOR MISMATCH'):
+            self.service.apply_eeprom_write_plan(plan, confirmed=True)
+        self.assertEqual(self.path.read_bytes(), bytes(256))
+        self.otp_path.write_bytes(bytes(20) + self.otp)
+        self.path.write_bytes(b'X' * 256)
+        with self.assertRaisesRegex(ValueError, 'changed since full write'):
+            self.service.apply_eeprom_write_plan(plan, confirmed=True)
+
+    def test_menu_columns_and_horizontal_navigation(self):
+        ui = UI(Mock(), self.service)
+        screen = ui.stdscr
+        screen.getmaxyx.return_value = (50, 120)
+        ui.draw()
+        drawn = [call.args for call in screen.addnstr.call_args_list]
+        headers = {args[2]: args[:2] for args in drawn if args[2] in ('--- ACTIONS ---', '--- SERVICE ---')}
+        self.assertEqual(headers['--- ACTIONS ---'][0], headers['--- SERVICE ---'][0])
+        self.assertLess(headers['--- ACTIONS ---'][1], headers['--- SERVICE ---'][1])
+        screen.getch.side_effect = [curses.KEY_RIGHT, curses.KEY_LEFT, ord('q')]
+        positions = []
+        ui.draw = lambda: positions.append(ui.cursor)
+        with patch('napi_config.tui.app.curses.curs_set'):
+            ui.run()
+        self.assertEqual(positions, [0, ui.service_start, 0])
+
+    def test_cli_processor_reset_preview_denied_and_confirmed(self):
+        before = self.store(self.cfg)
+        command = [sys.executable, '-B', '-m', 'napi_config', 'processor', 'reset',
+                   '--eeprom', str(self.path), '--db', str(self.root / 'boards.yaml'), '--json']
+        preview = subprocess.run(command + ['--preview'], capture_output=True, text=True)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(self.path.read_bytes(), before)
+        denied = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertEqual(self.path.read_bytes(), before)
+        written = subprocess.run(command + ['--yes'], capture_output=True, text=True)
+        self.assertEqual(written.returncode, 0, written.stderr)
+        self.assertTrue(json.loads(written.stdout)['verified'])
+        self.assertEqual(self.service.read_eeprom(), replace(self.cfg, proc_id_type=0, proc_id=b''))
+
     def test_reset_and_new_configuration(self):
         for cfg in (self.cfg, replace(self.cfg, format_version=2, proc_id_type=0, proc_id=b'')):
             before = self.store(cfg)
@@ -153,7 +245,7 @@ class ResetTests(unittest.TestCase):
         comparison = self.service.eeprom_comparison(draft)
         self.assertEqual(comparison['rows'][0]['proposed'], '3')
         self.service.write_eeprom(draft, confirmed=True)
-        self.assertEqual(self.service.read_eeprom(), replace(draft, format_version=3))
+        self.assertEqual(self.service.read_eeprom(), replace(draft, format_version=3, proc_id_type=1, proc_id=self.otp))
 
     def test_navigation_wraps_at_menu_boundaries_and_processor_is_in_actions(self):
         for width in (60, 120):
@@ -166,8 +258,9 @@ class ResetTests(unittest.TestCase):
             with patch('napi_config.tui.app.curses.curs_set'):
                 ui.run()
             self.assertEqual(positions, [0, len(ui.rows) - 1, 0])
-            self.assertIn(('action', 'write_processor'), ui.ACTIONS)
-            self.assertEqual(ui.rows.count(('action', 'write_processor')), 1)
+            self.assertNotIn(('action', 'write_processor'), ui.rows)
+            self.assertIn(('action', 'reset_processor'), ui.SERVICES)
+            self.assertEqual(ui.rows.count(('action', 'view_generate_macs')), 1)
             self.assertNotIn(('action', 'view_boot'), ui.rows)
 
     def test_tui_initialization_keeps_draft_on_cancel_and_writes_it_on_yes(self):

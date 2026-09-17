@@ -1,3 +1,4 @@
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,8 @@ class BootTests(unittest.TestCase):
         self.eeprom = self.root / 'eeprom'
         self.eeprom.write_bytes(bytes(256))
         self.service = create_service(str(self.eeprom), boot_dir=str(self.root))
+        self.service.otp = Mock()
+        self.service.otp.read_id.return_value = bytes.fromhex("0235221703")
 
     def env(self, text, filename='armbianEnv.txt'):
         path = self.root / filename
@@ -111,7 +114,7 @@ class BootTests(unittest.TestCase):
         cfg = BoardConfig(board_name='From EEPROM', serial_number=12, mfg_date='2026-09-16', enabled={'i2c1'})
         self.service.write_eeprom(cfg, confirmed=True)
         ui = UI(Mock(), self.service)
-        self.assertEqual(ui.cfg, cfg)
+        self.assertEqual(ui.cfg, replace(cfg, proc_id_type=1, proc_id=bytes.fromhex("0235221703")))
         self.assertIn('EEPROM configuration loaded', ui.status)
         self.eeprom.write_bytes(b'\xff' * 256)
         ui = UI(Mock(), self.service)

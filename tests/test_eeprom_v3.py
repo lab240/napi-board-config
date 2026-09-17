@@ -193,8 +193,8 @@ class EepromV3Tests(unittest.TestCase):
 
     def test_full_write_cannot_implicitly_migrate_or_change_binding(self):
         before = self.store(self.cfg)
-        for cfg in [replace(self.cfg, proc_id_type=0, proc_id=b''),
-                    replace(self.cfg, proc_id=bytes.fromhex('090b131d04'))]:
+        self.assertFalse(self.service.write_eeprom(replace(self.cfg, proc_id_type=0, proc_id=b''), confirmed=True))
+        for cfg in [replace(self.cfg, proc_id=bytes.fromhex('090b131d04'))]:
             with self.assertRaisesRegex(ValueError, 'explicit processor rebind'):
                 self.service.write_eeprom(cfg, confirmed=True)
         self.assertEqual(self.path.read_bytes(), before)
@@ -241,7 +241,7 @@ class EepromV3Tests(unittest.TestCase):
         self.assertNotIn('i2c1', self.service.defaults().enabled)
         cfg = BoardConfig()
         self.assertTrue(self.service.write_eeprom(cfg, confirmed=True))
-        self.assertEqual(self.service.read_eeprom(), cfg)
+        self.assertEqual(self.service.read_eeprom(), replace(cfg, proc_id_type=1, proc_id=self.otp))
         plan = self.service.processor_plan()
         self.service.apply_instance_eeprom_plan(plan, confirmed=True)
         self.assertNotIn('i2c1', self.service.read_eeprom().enabled)

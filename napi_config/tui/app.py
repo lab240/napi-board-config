@@ -4,19 +4,11 @@ from ..core.models import INTERFACES, IF_BY_KEY
 
 
 class UI:
-    ACTIONS = [
-        ("action", "load_defaults"),
-        ("action", "read"),
-        ("action", "write_eeprom"),
-        ("action", "write_env"),
-        ("action", "profile_load"),
-        ("action", "profile_add"),
-        ("action", "profile_delete"),
-        ("action", "github_db"),
-        ("action", "view_macs"),
-        ("action", "generate_macs"),
-        ("action", "write_processor"),
-    ]
+    ACTIONS = [("action", key) for key in (
+        "read", "write_eeprom", "profile_load", "profile_add", "profile_delete",
+        "github_db", "view_generate_macs", "write_env")]
+    SERVICES = [("action", key) for key in (
+        "load_defaults", "reset_eeprom", "reset_processor", "enable_i2c1_eeprom", "quit")]
 
     def __init__(self, stdscr, service):
         self.stdscr = stdscr
@@ -44,10 +36,9 @@ class UI:
             ("instance", "mfg_date"),
             ("instance", "mac_count"),
             ("field", "env_target"),
-            ("action", "enable_i2c1_eeprom"),
-            ("action", "reset_eeprom"),
-            ("action", "quit"),
         ]
+        self.service_start = len(self.rows)
+        self.rows += self.SERVICES
 
     def is_action_cursor(self):
         return 0 <= self.cursor < len(self.ACTIONS)
@@ -60,26 +51,12 @@ class UI:
             ch = self.stdscr.getch()
             if ch == 3:  # Ctrl-C
                 return
-            if self.is_action_cursor() and ch in (curses.KEY_LEFT, curses.KEY_RIGHT,
-                                                   curses.KEY_UP, curses.KEY_DOWN,
-                                                   ord("h"), ord("l"), ord("k"), ord("j")):
-                n = len(self.ACTIONS)
-                cols = 2 if self.stdscr.getmaxyx()[1] >= 64 else 1
-                if cols == 2:
-                    if ch in (curses.KEY_LEFT, ord("h")):
-                        self.cursor = max(0, self.cursor - 1)
-                    elif ch in (curses.KEY_RIGHT, ord("l")):
-                        self.cursor = min(n-1, self.cursor + 1)
-                    elif ch in (curses.KEY_UP, ord("k")):
-                        self.cursor = len(self.rows) - 1 if self.cursor == 0 else max(0, self.cursor - 2)
-                    else:
-                        nxt = self.cursor + 2
-                        self.cursor = nxt if nxt < n else min(n, len(self.rows)-1)
-                else:
-                    if ch in (curses.KEY_UP, ord("k")):
-                        self.cursor = (self.cursor - 1) % len(self.rows)
-                    elif ch in (curses.KEY_DOWN, ord("j")):
-                        self.cursor = (self.cursor + 1) % len(self.rows)
+            if ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord("h"), ord("l")):
+                if self.stdscr.getmaxyx()[1] >= 80:
+                    if self.is_action_cursor() and ch in (curses.KEY_RIGHT, ord("l")):
+                        self.cursor = self.service_start + min(self.cursor, len(self.SERVICES)-1)
+                    elif self.cursor >= self.service_start and ch in (curses.KEY_LEFT, ord("h")):
+                        self.cursor = self.cursor - self.service_start
             elif ch in (curses.KEY_UP, ord("k")):
                 self.cursor = (self.cursor - 1) % len(self.rows)
             elif ch in (curses.KEY_DOWN, ord("j")):
@@ -107,6 +84,8 @@ class UI:
             "profile_delete": "[ Delete board from local DB ]",
             "github_db": "[ Load DB from GitHub ]",
             "view_macs": "[ View MACs ]",
+            "view_generate_macs": "[ View and generate MACs ]",
+            "reset_processor": "[ Reset processor ID ]",
             "generate_macs": "[ Generate MACs ]",
             "enable_i2c1_eeprom": "[ Add EEPROM overlay and reboot ]",
             "view_boot": "[ View current boot config ]",
@@ -167,7 +146,7 @@ class UI:
     def draw(self):
         self.action_states = {key: self.service.action_status(self.cfg, key)
                               for key in ('read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env',
-                                          'write_processor', 'reset_eeprom')}
+                                          'reset_processor', 'reset_eeprom')}
         try:
             info = self.service.boot_info()
             self.boot_summary = info['path'] + ' (prefix: ' + (info['overlay_prefix'] or 'none') + ')'
@@ -191,36 +170,31 @@ class UI:
         except curses.error:
             pass
 
-        action_cols = 2 if w >= 64 else 1
-        action_rows = (len(self.ACTIONS)+action_cols-1)//action_cols
+        wide = w >= 80
         logical = []
-
-        logical.append(("section", "--- ACTIONS ---", None))
-        for r in range(action_rows):
-            logical.append(("actionrow", r, None))
+        if wide:
+            logical.append(("menuheaders", None, None))
+            for r in range(max(len(self.ACTIONS), len(self.SERVICES))):
+                ids = ([r] if r < len(self.ACTIONS) else [])
+                if r < len(self.SERVICES):
+                    ids.append(self.service_start + r)
+                logical.append(("menurow", ids, None))
+        else:
+            logical.append(("section", "--- ACTIONS ---", None))
+            logical.extend(("item", i, None) for i in range(len(self.ACTIONS)))
         logical.append(("section", "--- BOARD CONFIG ---", None))
-
         first_cfg = len(self.ACTIONS)
-        env_index = next(i for i,x in enumerate(self.rows) if x == ("field","env_target"))
-        service_index = next(i for i,x in enumerate(self.rows) if x == ("action","enable_i2c1_eeprom"))
-        for idx in range(first_cfg, env_index):
-            logical.append(("item", idx, None))
+        env_index = next(i for i, x in enumerate(self.rows) if x == ("field", "env_target"))
+        logical.extend(("item", i, None) for i in range(first_cfg, env_index))
         logical.append(("section", "--- BOOT CONFIGURATION ---", None))
         logical.append(("item", env_index, None))
-        logical.append(("section", "--- SERVICE ---", None))
-        for idx in range(service_index, len(self.rows)):
-            logical.append(("item", idx, None))
-
-        # Determine which logical screen line contains the cursor.
-        cursor_line = 1
-        for n, entry in enumerate(logical):
-            typ, val, _ = entry
-            if typ == "actionrow":
-                r=val
-                ids=[r*action_cols+c for c in range(action_cols) if r*action_cols+c < len(self.ACTIONS)]
-                if self.cursor in ids: cursor_line=n
-            elif typ=="item" and val==self.cursor:
-                cursor_line=n
+        if not wide:
+            logical.append(("section", "--- SERVICE ---", None))
+            logical.extend(("item", i, None) for i in range(self.service_start, len(self.rows)))
+        cursor_line = 0
+        for n, (typ, val, _) in enumerate(logical):
+            if (typ == "menurow" and self.cursor in val) or (typ == "item" and val == self.cursor):
+                cursor_line = n
 
         visible=max(1,h-3)
         if not hasattr(self,"scroll_top"): self.scroll_top=0
@@ -234,21 +208,16 @@ class UI:
             try:
                 if typ=="section":
                     s.addnstr(y,1,val,max(1,w-2),curses.A_BOLD)
-                elif typ=="actionrow":
-                    r=val
-                    if action_cols==2:
-                        colw=max(1,(w-3)//2)
-                        for c in range(2):
-                            idx=r*2+c
-                            if idx>=len(self.ACTIONS): continue
-                            text=self.action_label(self.ACTIONS[idx][1])
-                            attr=curses.A_REVERSE if idx==self.cursor else curses.A_NORMAL
-                            s.addnstr(y,1+c*colw,text,max(1,colw-1),attr)
-                    else:
-                        idx=r
-                        text=self.action_label(self.ACTIONS[idx][1])
-                        attr=curses.A_REVERSE if idx==self.cursor else curses.A_NORMAL
-                        s.addnstr(y,1,text,max(1,w-2),attr)
+                elif typ == "menuheaders":
+                    colw = (w-3)//2
+                    s.addnstr(y, 1, "--- ACTIONS ---", colw-1, curses.A_BOLD)
+                    s.addnstr(y, 1+colw, "--- SERVICE ---", colw-1, curses.A_BOLD)
+                elif typ == "menurow":
+                    colw = (w-3)//2
+                    for idx in val:
+                        column = 0 if idx < len(self.ACTIONS) else 1
+                        attr = curses.A_REVERSE if idx == self.cursor else curses.A_NORMAL
+                        s.addnstr(y, 1+column*colw, self.action_label(self.rows[idx][1]), colw-1, attr)
                 else:
                     idx=val
                     kind,key=self.rows[idx]
@@ -311,6 +280,8 @@ class UI:
             "github_db":self.load_db_github,
             "generate_macs":self.generate_macs,
             "view_macs":self.view_macs,
+            "view_generate_macs":self.view_generate_macs,
+            "reset_processor":self.reset_processor,
             "enable_i2c1_eeprom":self.enable_i2c1_eeprom,
             "view_processor":self.view_processor,
             "bind_processor":lambda: self.change_instance('bind'),
@@ -530,6 +501,29 @@ class UI:
             return False
         self.perform(operation)
 
+    def view_generate_macs(self):
+        info = self.service.processor_status()
+        text = ('Current MACs:\n' + ('\n'.join(self.service.mac_rows(self.cfg)) or 'No MAC addresses')
+                + '\n\nCurrent OTP ID: ' + (info['current_id'] or 'unavailable')
+                + ('\n' + info['error'] if info['error'] else ''))
+        if self.view_text(text, offer_write=True, action_label='generate MACs'):
+            self.generate_macs()
+
+    def reset_processor(self):
+        def operation():
+            plan = self.service.reset_processor_plan()
+            if not plan['changed']:
+                self.view_comparison(plan['comparison'], offer_write=False)
+                self.status = 'Processor ID is already unset; no write performed'
+                return False
+            if not self.view_comparison(plan['comparison'], action_label='reset processor ID'):
+                return False
+            if not self.confirm_yes('Clear only processor ID? Other EEPROM fields are preserved. Backup is saved first.'):
+                return False
+            self.service.apply_reset_processor_plan(plan, confirmed=True)
+            return self.service.reset_processor_configuration(self.cfg)
+        self.perform(operation, update=True)
+
     def view_macs(self):
         rows = self.service.mac_rows(self.cfg)
         self.view_text('MAC addresses\n\n' + '\n'.join(rows) if rows else 'No MAC addresses generated')
@@ -619,7 +613,8 @@ class UI:
 
     def write_eeprom(self):
         def operation():
-            comparison = self.service.eeprom_comparison(self.cfg)
+            write_plan = self.service.eeprom_write_plan(self.cfg)
+            comparison = write_plan['comparison']
             metadata = ''
             plan = getattr(self, 'last_mac_plan', None)
             if plan and plan['generated']['macs'] == self.service.document(self.cfg)['macs']:
@@ -627,7 +622,7 @@ class UI:
             if not self.view_comparison(comparison, metadata) or not self.confirm_yes('WRITE EEPROM with current configuration?'):
                 self.status = 'EEPROM write cancelled'
                 return False
-            if not self.service.write_eeprom(self.cfg, confirmed=True):
+            if not self.service.apply_eeprom_write_plan(write_plan, confirmed=True):
                 self.status = 'EEPROM configuration already matches; no write performed'
                 return False
             return self.service.update(self.service.read_eeprom(), 'comment', self.cfg.comment)

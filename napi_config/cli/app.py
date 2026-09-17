@@ -9,7 +9,7 @@ def parser():
     result.add_argument('--version', action='version', version='napi-config 20')
     groups = result.add_subparsers(dest='group', required=True)
     actions = {'eeprom': ['show', 'preview', 'write', 'reset', 'migrate', 'overlays', 'enable'],
-               'processor': ['status', 'write', 'bind', 'rebind'],
+               'processor': ['status', 'write', 'bind', 'rebind', 'reset'],
                'mac': ['generate', 'preview', 'write', 'assignments'], 'board': ['info'], 'overlay': ['list'],
                'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
@@ -29,7 +29,7 @@ def parser():
                 inputs.add_argument('--config', help='Instance JSON configuration')
                 inputs.add_argument('--profile', nargs=2, type=int, metavar=('ID', 'REV'), help='Reusable profile; requires --yes')
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm changes')
-            if group in ('tui', 'processor', 'mac') or (group == 'eeprom' and name == 'write'):
+            if group in ('tui', 'processor', 'mac') or (group == 'eeprom' and name in ('write', 'preview')):
                 command.add_argument('--otp', default=DEFAULT_OTP, help='RK3308 NVMEM path; offset 20, length 5')
             if (group == 'processor' and name != 'status') or (group == 'eeprom' and name in ('migrate', 'reset')):
                 command.add_argument('--preview', action='store_true', help='Show proposed changes without writing')
@@ -58,12 +58,14 @@ def execute(args, service):
         plan = ((service.reset_eeprom_plan() if args.action == 'reset' else service.migration_plan())
                 if args.group == 'eeprom' else service.processor_write_plan(
                     service.load_configuration(args.config) if args.config else None) if args.action == 'write'
+                else service.reset_processor_plan() if args.action == 'reset'
                 else service.processor_plan(rebind=args.action == 'rebind'))
         if args.preview:
             return {'preview': plan['comparison'], 'changed': plan['changed'], 'writable': plan.get('writable', True)}
         if plan.get('writable') is False:
             raise ValueError(plan['reason'])
-        written = (service.apply_reset_eeprom_plan(plan, confirmed=args.yes) if args.action == 'reset'
+        written = (service.apply_reset_eeprom_plan(plan, confirmed=args.yes) if args.group == 'eeprom' and args.action == 'reset'
+                   else service.apply_reset_processor_plan(plan, confirmed=args.yes) if args.action == 'reset'
                    else service.apply_processor_write_plan(plan, confirmed=args.yes) if args.action == 'write'
                    else service.apply_instance_eeprom_plan(plan, confirmed=args.yes))
         return {'written': written, 'verified': True,

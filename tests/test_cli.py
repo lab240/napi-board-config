@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 import subprocess
 import sys
@@ -35,7 +36,7 @@ class CliTests(unittest.TestCase):
             denied = self.run_cli('eeprom', 'write', '--config', config, '--eeprom', str(eeprom))
             self.assertNotEqual(denied.returncode, 0)
             self.assertEqual(eeprom.read_bytes(), before)
-            write = self.run_cli('eeprom', 'write', '--config', config, '--eeprom', str(eeprom), '--yes', '--json')
+            write = self.run_cli('eeprom', 'write', '--config', config, '--eeprom', str(eeprom), '--yes', '--json', '--otp', str(otp))
             self.assertEqual(write.returncode, 0, write.stderr)
             shown = self.run_cli('eeprom', 'show', '--eeprom', str(eeprom), '--json')
             self.assertEqual(shown.returncode, 0, shown.stderr)
@@ -139,9 +140,12 @@ class CliTests(unittest.TestCase):
             root = Path(directory)
             eeprom = root / 'eeprom'
             eeprom.write_bytes(b'\xff' * 256)
-            service = create_service(eeprom_path=str(eeprom))
+            otp = root / 'otp'
+            otp.write_bytes(bytes(20) + bytes.fromhex('0235221703'))
+            service = create_service(eeprom_path=str(eeprom), otp_path=str(otp))
             stored = BoardConfig(serial_number=100, board_name='Stored board', enabled={'uart4', 'i2c1'})
             service.write_eeprom(stored, confirmed=True)
+            stored = service.read_eeprom()
             before = eeprom.read_bytes()
             cfg = BoardConfig(serial_number=999, board_name='Unsaved board',
                               macs=generate_macs(bytes.fromhex('0235221703')))
@@ -154,14 +158,14 @@ class CliTests(unittest.TestCase):
             denied = self.run_cli('mac', 'write', *common)
             self.assertNotEqual(denied.returncode, 0)
             self.assertEqual(eeprom.read_bytes(), before)
-            applied = self.run_cli('mac', 'write', '--yes', *common)
+            applied = self.run_cli('mac', 'write', '--yes', '--otp', str(otp), *common)
             self.assertEqual(applied.returncode, 0, applied.stderr)
             actual = service.read_eeprom()
             self.assertEqual(actual.serial_number, 100)
             self.assertEqual(actual.board_name, 'Stored board')
             self.assertEqual(actual.enabled, {'uart4', 'i2c1'})
             self.assertEqual(actual.macs, cfg.macs)
-            again = self.run_cli('mac', 'write', '--yes', *common)
+            again = self.run_cli('mac', 'write', '--yes', '--otp', str(otp), *common)
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertFalse(json.loads(again.stdout)['written'])
 
