@@ -251,7 +251,7 @@ class BoardService:
     def processor_plan(self, rebind=False):
         cfg = self.read_eeprom()
         if cfg.format_version != 3:
-            raise ValueError('Processor binding requires v3; migrate v2 explicitly first')
+            raise ValueError('Processor binding requires v3; reset EEPROM and write a new configuration first (or migrate v2 explicitly)')
         otp = validate_otp(self.otp.read_id())
         if cfg.proc_id_type and cfg.proc_id != otp and not rebind:
             raise ValueError('PROCESSOR MISMATCH: use explicit processor rebind')
@@ -266,6 +266,27 @@ class BoardService:
             raise ValueError('Migration requires EEPROM format v2')
         return self.instance_eeprom_plan(replace(cfg, format_version=3), 'MIGRATE EEPROM v2 TO v3',
                                          'Format and CRC layout change; processor remains NOT BOUND. Serial and MACs are preserved.')
+
+    def processor_write_plan(self):
+        self.require_eeprom()
+        otp = validate_otp(self.otp.read_id())
+        try:
+            cfg = self.read_eeprom()
+            reason = '' if cfg.format_version == 3 else 'EEPROM is v2. Reset EEPROM and write a new v3 configuration first.'
+        except ValueError as exc:
+            cfg = None
+            reason = 'EEPROM is uninitialized or invalid. Write a new v3 configuration first. ' + str(exc)
+        if reason:
+            comparison = self.configuration_comparison(
+                {'Processor ID': 'not stored'}, [('Processor ID', otp.hex())],
+                'VIEW AND WRITE PROCESSOR ID', reason)
+            return {'writable': False, 'changed': False, 'comparison': comparison, 'reason': reason}
+        plan = self.processor_plan(rebind=True)
+        plan['writable'] = True
+        plan['comparison']['title'] = 'VIEW AND WRITE PROCESSOR ID'
+        if cfg.proc_id_type and cfg.proc_id != plan['otp_id']:
+            plan['comparison']['note'] = 'PROCESSOR MISMATCH. Explicit confirmation binds the replacement SoC. Serial and stored MACs are preserved.'
+        return plan
 
     def instance_eeprom_plan(self, candidate, title, note, otp=None, rebind=False):
         self.validate(candidate)
@@ -326,6 +347,43 @@ class BoardService:
 
     def mac_strings(self, cfg):
         return [format_mac(mac) for mac in cfg.macs]
+
+    def reset_eeprom_plan(self):
+        self.require_eeprom()
+        image = self.eeprom.read()
+        if len(image) != 256:
+            raise ValueError('Reset requires a complete 256-byte EEPROM image')
+        try:
+            current = dict(self.eeprom_fields(image))
+            error = ''
+        except ValueError as exc:
+            current = {'EEPROM content': 'invalid or uninitialized'}
+            error = str(exc)
+        proposed = [('EEPROM content', '256 zero bytes')]
+        proposed += [(label, 'cleared') for label in current if label != 'EEPROM content']
+        comparison = self.configuration_comparison(current, proposed, 'RESET EEPROM',
+            'Erases ALL 256 bytes: configuration, serial, date, MACs, processor ID and reserved area. '
+            'A binary backup is saved first. EEPROM becomes uninitialized.', error)
+        return {'before_image': image, 'after': bytes(256), 'changed': image != bytes(256),
+                'comparison': comparison}
+
+    def apply_reset_eeprom_plan(self, plan, confirmed=False):
+        require_confirmation(confirmed)
+        self.require_eeprom(write=True)
+        if len(plan['before_image']) != 256 or plan['after'] != bytes(256):
+            raise ValueError('Invalid EEPROM reset plan')
+        if self.eeprom.read() != plan['before_image']:
+            raise ValueError('EEPROM changed since reset preview')
+        self.last_eeprom_backup = None
+        if plan['before_image'] == bytes(256):
+            return False
+        self.last_eeprom_backup = self.configurations.backup_eeprom(plan['before_image'])
+        if self.eeprom.read() != plan['before_image']:
+            raise ValueError('EEPROM changed while creating backup')
+        self.eeprom.write(plan['after'])
+        if self.eeprom.read() != plan['after']:
+            raise OSError('EEPROM reset read-back mismatch')
+        return True
 
     def platform_names(self):
         return self.catalog.names()
@@ -443,7 +501,8 @@ class BoardService:
                 'boot_file': info['path'], 'candidates': candidates, 'message': message}
 
     def action_status(self, cfg, action):
-        if action in ('read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom'):
+        if action in ('read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom',
+                      'write_processor', 'reset_eeprom'):
             return self.eeprom_status(write=action not in ('read', 'view_processor'))
         if action not in ('enable_i2c1_eeprom', 'view_boot', 'write_env'):
             return {'enabled': True, 'reason': ''}

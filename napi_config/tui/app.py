@@ -45,10 +45,8 @@ class UI:
             ("instance", "mac_count"),
             ("field", "env_target"),
             ("action", "enable_i2c1_eeprom"),
-            ("action", "view_processor"),
-            ("action", "bind_processor"),
-            ("action", "rebind_processor"),
-            ("action", "migrate_eeprom"),
+            ("action", "write_processor"),
+            ("action", "reset_eeprom"),
             ("action", "quit"),
         ]
 
@@ -117,6 +115,8 @@ class UI:
             "bind_processor": "[ Bind processor ]",
             "rebind_processor": "[ Rebind processor ]",
             "migrate_eeprom": "[ Migrate EEPROM v2 to v3 ]",
+            "write_processor": "[ View and write processor ID ]",
+            "reset_eeprom": "[ Reset EEPROM ]",
             "quit": "[ Quit ]",
         }[key]
         state = getattr(self, 'action_states', {}).get(key, {})
@@ -163,7 +163,7 @@ class UI:
     def draw(self):
         self.action_states = {key: self.service.action_status(self.cfg, key)
                               for key in ('read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env',
-                                          'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom')}
+                                          'write_processor', 'reset_eeprom')}
         try:
             info = self.service.boot_info()
             self.boot_summary = info['path'] + ' (prefix: ' + (info['overlay_prefix'] or 'none') + ')'
@@ -312,6 +312,8 @@ class UI:
             "bind_processor":lambda: self.change_instance('bind'),
             "rebind_processor":lambda: self.change_instance('rebind'),
             "migrate_eeprom":lambda: self.change_instance('migrate'),
+            "write_processor":lambda: self.change_instance('write'),
+            "reset_eeprom":self.reset_eeprom,
         }.get(key,lambda:None)()
         return key=="quit"
 
@@ -538,9 +540,16 @@ class UI:
         self.perform(operation)
 
     def change_instance(self, action):
+        saved = []
         def operation():
             plan = (self.service.migration_plan() if action == 'migrate'
+                    else self.service.processor_write_plan() if action == 'write'
                     else self.service.processor_plan(rebind=action == 'rebind'))
+            if plan.get('writable') is False:
+                self.view_text(plan['comparison']['title'] + '\nCurrent OTP ID: '
+                               + plan['comparison']['rows'][0]['proposed'] + '\n\n' + plan['reason'])
+                self.status = 'Processor ID viewed; EEPROM unchanged'
+                return False
             if not plan['changed']:
                 self.view_text('Processor binding already matches; no EEPROM write needed.')
                 return False
@@ -551,9 +560,31 @@ class UI:
                 self.status = 'EEPROM change cancelled'
                 return False
             self.service.apply_instance_eeprom_plan(plan, confirmed=True)
-            self.status = 'EEPROM verified; backup: ' + self.service.last_eeprom_backup
+            saved.append(self.service.last_eeprom_backup)
             return self.service.read_eeprom()
         self.perform(operation, update=True)
+        if saved:
+            self.status = 'EEPROM verified; backup: ' + saved[0]
+
+    def reset_eeprom(self):
+        completed = []
+        def operation():
+            plan = self.service.reset_eeprom_plan()
+            if not self.view_comparison(plan['comparison'], action_label='reset EEPROM'):
+                self.status = 'EEPROM reset cancelled'
+                return False
+            if not self.confirm_yes('RESET ALL EEPROM DATA and clear the in-memory configuration? Binary backup is saved first.'):
+                self.status = 'EEPROM reset cancelled'
+                return False
+            self.service.apply_reset_eeprom_plan(plan, confirmed=True)
+            completed.append(self.service.last_eeprom_backup)
+            self.last_mac_plan = None
+            return self.service.defaults()
+        self.perform(operation, update=True)
+        if completed:
+            self.status = 'EEPROM empty; enter new values and use Write EEPROM.'
+            if completed[0]:
+                self.status += ' Backup: ' + completed[0]
 
     def load_defaults(self):
         if self.confirm_yes('Load defaults? Board configuration and instance data will be reset.'):

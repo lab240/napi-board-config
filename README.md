@@ -41,9 +41,13 @@ napi-config --help
 | `napi-config eeprom show` | Прочитать EEPROM и проверить формат, CRC и значения |
 | `napi-config eeprom preview --config instance.json` | Показать все текущие и предлагаемые поля EEPROM без записи |
 | `napi-config eeprom write --config instance.json --yes` | Записать конфигурацию и проверить чтением |
+| `napi-config eeprom reset --preview` | Показать полное обнуление EEPROM без записи |
+| `napi-config eeprom reset --yes` | Обнулить все 256 байт с резервной копией и read-back |
 | `napi-config eeprom migrate --preview` | Показать миграцию EEPROM v2 → v3 без записи |
 | `napi-config eeprom migrate --yes` | Мигрировать v2 → v3 с бинарной резервной копией |
 | `napi-config processor status` | Сравнить сохранённый ID процессора с текущим OTP |
+| `napi-config processor write --preview` | Показать текущий и предлагаемый ID процессора |
+| `napi-config processor write --yes` | Записать текущий OTP ID, явно подтверждая замену старой привязки |
 | `napi-config processor bind --preview` | Показать предлагаемую привязку процессора |
 | `napi-config processor bind --yes` | Привязать текущий процессор к EEPROM v3 |
 | `napi-config processor rebind --preview` | Показать замену ранее привязанного процессора |
@@ -153,11 +157,11 @@ CRC32 покрывает `0x00..0x79` и хранится little endian в `0x7A
 автоматически. Для доступа к физической EEPROM шина должна работать в Linux;
 это проверяется доступностью устройства. EEPROM overlay сама не добавляется.
 
-TUI показывает состояние процессора и предлагает `View processor binding`,
-`Bind processor`, `Rebind processor`, `Migrate EEPROM v2 to v3`.
+TUI показывает состояние процессора и предлагает `View and write processor ID`
+и `Reset EEPROM`. Отдельные bind/rebind и миграция убраны из меню.
 Состояния: `NOT BOUND`, `MATCH`, `PROCESSOR MISMATCH`, `OTP UNAVAILABLE`.
 При несовпадении сохранённый ID не заменяется обычной записью: требуется
-явный `Rebind processor`. Привязка и перепривязка не меняют serial и MAC.
+явное подтверждение в `View and write processor ID`. Привязка и перепривязка не меняют serial и MAC.
 Если после замены SoC нужны новые MAC, их генерируют отдельным действием.
 Повторная привязка того же ID не выполняет лишнюю запись.
 
@@ -167,6 +171,22 @@ CLI требует `--yes`, а `--preview` только показывает и�
 бинарная копия EEPROM в `eeprom-backups/` рядом с выбранной `boards.yaml`.
 Ошибка создания копии блокирует запись. После записи выполняется read-back.
 Обратной автоматической миграции v3 → v2 нет; старая v19 не читает v3.
+
+Для текущей отладочной платы основной сценарий — `Reset EEPROM` → задать
+новые значения → `Write EEPROM` → `View and write processor ID`.
+Сброс сначала показывает текущие данные и предупреждение об удалении ВСЕХ
+256 байт, включая serial, дату, MAC, привязку и резерв. Enter открывает
+отдельное подтверждение точным `yes`. Перед записью сохраняется полный
+бинарный backup, после — read-back. TUI также очищает конфигурацию в памяти
+до defaults v3. Отказ на любом этапе сохраняет и EEPROM, и текущий черновик.
+Пустая EEPROM не содержит корректного заголовка/CRC и требует полной записи;
+сброс работает также с некорректной EEPROM. Уже нулевая EEPROM повторно не пишется.
+
+ID процессора читается из OTP, а не генерируется. При `PROCESSOR MISMATCH`
+объединённый пункт показывает старые/новые значения и позволяет перепривязку
+через `yes`, сохраняя serial/MAC. На v2 или пустой EEPROM он показывает текущий
+OTP и объясняет, что сначала нужна новая конфигурация v3. CLI bind/rebind/migrate
+сохранены для совместимости, но миграция не нужна для сценария полного сброса.
 
 ## MAC из RK3308 OTP
 

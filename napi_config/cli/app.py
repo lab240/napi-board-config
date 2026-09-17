@@ -8,8 +8,8 @@ def parser():
     result = argparse.ArgumentParser(prog='napi-config')
     result.add_argument('--version', action='version', version='napi-config 20')
     groups = result.add_subparsers(dest='group', required=True)
-    actions = {'eeprom': ['show', 'preview', 'write', 'migrate', 'overlays', 'enable'],
-               'processor': ['status', 'bind', 'rebind'],
+    actions = {'eeprom': ['show', 'preview', 'write', 'reset', 'migrate', 'overlays', 'enable'],
+               'processor': ['status', 'write', 'bind', 'rebind'],
                'mac': ['generate', 'preview', 'write', 'assignments'], 'board': ['info'], 'overlay': ['list'],
                'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
@@ -31,7 +31,7 @@ def parser():
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm changes')
             if group in ('tui', 'processor', 'mac') or (group == 'eeprom' and name == 'write'):
                 command.add_argument('--otp', default=DEFAULT_OTP, help='RK3308 NVMEM path; offset 20, length 5')
-            if (group == 'processor' and name != 'status') or (group == 'eeprom' and name == 'migrate'):
+            if (group == 'processor' and name != 'status') or (group == 'eeprom' and name in ('migrate', 'reset')):
                 command.add_argument('--preview', action='store_true', help='Show proposed changes without writing')
                 command.add_argument('--yes', action='store_true', help='Explicitly confirm EEPROM change')
             if group == 'mac' and name == 'generate':
@@ -50,14 +50,18 @@ def parser():
 
 
 def execute(args, service):
-    if args.group == 'processor' or (args.group == 'eeprom' and args.action == 'migrate'):
+    if args.group == 'processor' or (args.group == 'eeprom' and args.action in ('migrate', 'reset')):
         if args.group == 'processor' and args.action == 'status':
             return service.processor_status()
-        plan = (service.migration_plan() if args.group == 'eeprom'
+        plan = ((service.reset_eeprom_plan() if args.action == 'reset' else service.migration_plan())
+                if args.group == 'eeprom' else service.processor_write_plan() if args.action == 'write'
                 else service.processor_plan(rebind=args.action == 'rebind'))
         if args.preview:
-            return {'preview': plan['comparison'], 'changed': plan['changed']}
-        written = service.apply_instance_eeprom_plan(plan, confirmed=args.yes)
+            return {'preview': plan['comparison'], 'changed': plan['changed'], 'writable': plan.get('writable', True)}
+        if plan.get('writable') is False:
+            raise ValueError(plan['reason'])
+        written = (service.apply_reset_eeprom_plan(plan, confirmed=args.yes) if args.action == 'reset'
+                   else service.apply_instance_eeprom_plan(plan, confirmed=args.yes))
         return {'written': written, 'verified': True,
                 'backup': getattr(service, 'last_eeprom_backup', None)}
     if args.group == 'hardware':
@@ -133,7 +137,7 @@ def main(argv=None):
         result = execute(args, service)
         if args.json:
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        elif (args.group == 'processor' and args.action != 'status') or (args.group == 'eeprom' and args.action == 'migrate'):
+        elif (args.group == 'processor' and args.action != 'status') or (args.group == 'eeprom' and args.action in ('migrate', 'reset')):
             if args.preview:
                 comparison = result['preview']
                 print(comparison['title'] + '\n' + comparison['note'])
