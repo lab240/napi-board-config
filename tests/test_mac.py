@@ -125,7 +125,7 @@ class MacTests(unittest.TestCase):
         ui.confirm_yes.reset_mock()
         ui.generate_macs()
         ui.confirm_yes.assert_not_called()
-        self.assertIn('already match this SoC', ui.status)
+        self.assertIn('MAC-only EEPROM write unavailable', ui.status)
         self.assertEqual(self.eeprom.read_bytes(), b'\xff' * 256)
 
     def test_native_policy_does_not_shift_slots_or_alter_eeprom(self):
@@ -177,7 +177,12 @@ class MacTests(unittest.TestCase):
             write.assert_called_once_with(cfg, confirmed=True)
         text = ui.view_text.call_args.args[0]
         self.assertIn('RK3308 OTP ID: 0235221703', text)
-        self.assertIn('Current EEPROM MACs', text)
+        self.assertIn('Current EEPROM:', text)
+        self.assertIn('Product ID:', text)
+        self.assertIn('Serial number:', text)
+        self.assertIn('Manufacturing date:', text)
+        self.assertIn('Interface mask:', text)
+        self.assertIn('CRC32:', text)
         self.assertIn('MAC8  Reserved', text)
 
     def test_policy_loads_from_settings_separately_from_eeprom(self):
@@ -188,3 +193,103 @@ class MacTests(unittest.TestCase):
         self.assertTrue(service.mac_assignments(cfg)['set_native_eth_mac'])
         self.assertEqual(service.mac_assignments(cfg)['assignments'][0]['slot'], 1)
         self.assertEqual(cfg.macs, self.service.generate_macs(BoardConfig(), confirmed=True).macs)
+
+
+class MacOnlyWriteTests(unittest.TestCase):
+    setUp = MacTests.setUp
+    def initial_configuration(self):
+        cfg = BoardConfig(product_id=77, product_rev=4, board_name='Production board',
+                          serial_number=12345, mfg_date='2026-09-17',
+                          enabled={'i2c1', 'usb_host'}, rtc_i2c1='ds1338',
+                          macs=[bytes.fromhex('02aabbccddee')])
+        blob = bytearray(encode_config(cfg, self.service.catalog))
+        # Preserve reserved bit and bytes beyond the NUL-terminated board name.
+        mask = int.from_bytes(blob[12:16], 'little') | (1 << 31)
+        blob[12:16] = mask.to_bytes(4, 'little')
+        blob[55] = 0x7e
+        blob[104:108] = struct.pack('<I', zlib.crc32(blob[:104]))
+        self.eeprom.write_bytes(blob + b'T' * (256 - len(blob)))
+        return cfg
+
+    def test_only_mac_ranges_change_and_crc_tail_and_metadata_survive(self):
+        original = self.initial_configuration()
+        before = self.eeprom.read_bytes()
+        macs = generate_macs(bytes.fromhex('0235221703'))
+        plan = self.service.mac_eeprom_plan(macs)
+        with self.assertRaisesRegex(ValueError, 'confirmation'):
+            self.service.apply_mac_eeprom_plan(plan)
+        self.assertEqual(self.eeprom.read_bytes(), before)
+        with patch.object(self.service.eeprom, 'write_ranges', wraps=self.service.eeprom.write_ranges) as write:
+            self.assertTrue(self.service.apply_mac_eeprom_plan(plan, confirmed=True))
+            self.assertEqual([(offset, len(data)) for offset, data in write.call_args.args[0]],
+                             [(0x17, 1), (0x38, 48), (0x68, 4)])
+        after = self.eeprom.read_bytes()
+        for index in range(256):
+            if index != 0x17 and not 0x38 <= index < 0x6c:
+                self.assertEqual(after[index], before[index], index)
+        actual = self.service.read_eeprom()
+        actual.macs = original.macs
+        self.assertEqual(actual, original)
+        same = self.service.mac_eeprom_plan(macs)
+        with patch.object(self.service.eeprom, 'write_ranges') as write:
+            self.assertFalse(self.service.apply_mac_eeprom_plan(same, confirmed=True))
+            write.assert_not_called()
+
+    def test_full_write_still_updates_all_configuration_fields(self):
+        self.initial_configuration()
+        cfg = BoardConfig(product_id=99, product_rev=8, board_name='New board',
+                          serial_number=222, mfg_date='2025-01-02', enabled={'uart4'},
+                          macs=generate_macs(bytes.fromhex('0235221703')))
+        text = self.service.eeprom_preview(cfg)
+        for field in ('Product ID: 99', 'Product revision: 8', 'Board name: New board',
+                      'Serial number: 222', 'Manufacturing date: 2025-01-02',
+                      'UART4: enabled', 'RTC on I2C1: none', 'MAC count: 8', 'CRC32:'):
+            self.assertIn(field, text)
+        self.assertTrue(self.service.write_eeprom(cfg, confirmed=True))
+        self.assertEqual(self.service.read_eeprom(), cfg)
+        self.assertEqual(self.eeprom.read_bytes()[108:], b'T' * 148)
+
+    def test_invalid_eeprom_stale_plan_tamper_and_readback_are_rejected(self):
+        macs = generate_macs(bytes.fromhex('0235221703'))
+        with self.assertRaisesRegex(ValueError, 'valid EEPROM configuration'):
+            self.service.mac_eeprom_plan(macs)
+        original = self.initial_configuration()
+        plan = self.service.mac_eeprom_plan(macs)
+        original.serial_number += 1
+        self.service.write_eeprom(original, confirmed=True)
+        changed = self.eeprom.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'changed since MAC write preview'):
+            self.service.apply_mac_eeprom_plan(plan, confirmed=True)
+        self.assertEqual(self.eeprom.read_bytes(), changed)
+        plan = self.service.mac_eeprom_plan(macs)
+        tampered = dict(plan)
+        payload = bytearray(plan['after'])
+        payload[16] ^= 1
+        payload[104:108] = struct.pack('<I', zlib.crc32(payload[:104]))
+        tampered['after'] = bytes(payload)
+        with self.assertRaisesRegex(ValueError, 'modifies other EEPROM fields'):
+            self.service.apply_mac_eeprom_plan(tampered, confirmed=True)
+        with patch.object(self.service.eeprom, 'write_ranges'):
+            with self.assertRaisesRegex(OSError, 'read-back mismatch'):
+                self.service.apply_mac_eeprom_plan(plan, confirmed=True)
+
+    def test_generation_offers_mac_write_and_decline_keeps_ram_macs(self):
+        self.initial_configuration()
+        before = self.eeprom.read_bytes()
+        ui = UI.__new__(UI)
+        ui.service = self.service
+        ui.cfg = BoardConfig(serial_number=999, board_name='Unsaved RAM changes')
+        ui.view_text = Mock(return_value=True)
+        ui.confirm_yes = Mock(side_effect=[True, False])
+        ui.generate_macs()
+        self.assertEqual(ui.confirm_yes.call_count, 2)
+        self.assertEqual(ui.cfg.serial_number, 999)
+        self.assertEqual(len(ui.cfg.macs), 8)
+        self.assertEqual(self.eeprom.read_bytes(), before)
+        ui.confirm_yes = Mock(return_value=True)
+        ui.offer_mac_eeprom_write()
+        self.assertEqual(self.service.read_eeprom().serial_number, 12345)
+        self.assertEqual(self.service.read_eeprom().macs, ui.cfg.macs)
+        ui.confirm_yes.reset_mock()
+        ui.offer_mac_eeprom_write()
+        ui.confirm_yes.assert_not_called()

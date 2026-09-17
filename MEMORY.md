@@ -1,6 +1,6 @@
 # Контекст для продолжения работы
 
-Обновлено: 2026-09-17. Последняя завершённая версия — **v18**.
+Обновлено: 2026-09-17. Последняя завершённая версия — **v19**.
 При возобновлении сначала прочитать этот файл, затем проверить фактическое
 состояние Git и платы: сведения об оборудовании ниже относятся к последней проверке.
 
@@ -8,8 +8,10 @@
 
 - Рабочий каталог: `/home/dmn/prj/napi-config`.
 - Репозиторий: https://github.com/lab240/napi-board-config, ветка `main`.
-- Последний программный коммит: `a58bc0e Add optional standard EEPROM overlay setup in v18`.
-  Отправлен на GitHub. Перед сохранением этого контекста рабочее дерево было чистым.
+- Базовый программный коммит v19: `c3c8392 Add stable OTP-derived MAC generation in v19`.
+  После него внесены исправления ниже; актуальный коммит смотреть в `git log`.
+- v18: `a58bc0e Add optional standard EEPROM overlay setup in v18`.
+- Перед переработкой MAC сохранён контекст v18: `53497a8`.
 - Предыдущие точки: `ca394ec` — разделение предупреждений и boot-preview v17;
   `63139c2` — архитектура v16; `738bf61` — монолитная версия v15.
 - Русский README описывает зависимости, CLI и текущую логику.
@@ -111,6 +113,60 @@ NAME брать из `candidates[].name` первой команды. Допол
   - armbianEnv: `063ad9c389774b3527be0f70794077bef5f4ca1de3a0305beee7aaa386c33015`
   - EEPROM: `f3ef0fbef5be0d4ad80018d1756362753498a56f9b7a5c666e2788487b27bc7c`
 
+## Последнее изменение: v19, стабильные MAC из OTP
+
+- v19 загружена в `/root/v19` на `root@192.168.30.53`, v18/v17 сохранены.
+  Запуск: `cd /root/v19 && ./napi-config tui`.
+- `core/mac.py`: namespace `b"NAPI-MAC-v1\x00"`, SHA256 от namespace + 5 бинарных
+  байт OTP; первые пять байт digest, младшие три бита пятого обнулены;
+  MAC = `02` + основа, младшие три бита последнего октета = slot 0..7.
+  Никаких random/serial/time/UUID/hostname/current-MAC fallback.
+- `hardware/otp.py`: `/sys/bus/nvmem/devices/rockchip-otp0/nvmem`, offset 20,
+  length 5, read-only open, exclusive advisory `fcntl.flock` с таймаутом 2 секунды,
+  seek/read/unlock. Ошибки открытия, lock, seek/read, короткий ID и нули/FF
+  завершают генерацию: `MAC generation failed: invalid or unavailable RK3308 OTP ID`.
+  Offset 8 (RKY32003) не использовать.
+- `MacSlot`: MAC1 Native Ethernet, MAC2 W5500 SPI1, MAC3 W5500 SPI2,
+  MAC4/5 USB Ethernet #1/#2, MAC6–8 Reserved. Интерфейсы не сдвигают номера.
+- Формат EEPROM не изменён: mac_count 0x17 = 8, MAC1 0x38, шаг 6 байт,
+  CRC32 по 0x00..0x67 в 0x68..0x6b. Запись идентичных целиком bytes пропускается.
+- `BoardService.mac_plan/apply_mac_plan`: общий preview с OTP/source,
+  конфигурацией в памяти, фактической EEPROM и генерируемыми значениями;
+  применение требует подтверждения и проверяет, что конфигурация не изменилась.
+  Генерация сама EEPROM не пишет; `write_eeprom` — отдельная операция.
+- TUI `Generate MACs`: preview → Enter → точное `yes`; q/Esc/любой другой
+  ответ отменяет. Совпадающие MAC сообщаются без повторного применения.
+  `Write EEPROM` отдельно показывает текущие и предлагаемые EEPROM MAC,
+  после текущей генерации также OTP/source, затем требует `yes`.
+- CLI: `mac preview`, `mac generate --yes --output instance.json`,
+  `mac assignments --config instance.json`. `--otp PATH` позволяет выбрать NVMEM
+  (в тестах временный fixture; в производстве только реальный OTP).
+  Генерация без config/profile использует валидную EEPROM или defaults;
+  источник MAC всё равно только OTP. `--output` содержит обычный instance JSON;
+  stdout `--json` генерации — отчёт с `configuration` и `mac_generation`.
+  В EEPROM write подавать instance JSON, не весь stdout-отчёт.
+- `settings.yaml`, параметр `set_native_eth_mac: false` по умолчанию;
+  `--settings PATH`. Настройка отдельно от EEPROM/board profiles, не меняет
+  генерацию или слоты. Общий `mac_assignments` исключает Native Ethernet при
+  false и включает MAC1 при true. **Механизма применения MAC к сетевым
+  интерфейсам Linux в проекте пока нет**: это конфигурация и расчёт назначений
+  для будущего потребителя, не ip-link write или загрузочный сетевой сервис.
+- 37 бит усечённого хеша не гарантируют глобальную уникальность разных OTP.
+  Пользователю это объяснено, README фиксирует необходимость производственной
+  проверки дубликатов для строгой уникальности. БД не добавляли.
+- Контрольные векторы проверены через OpenSSL:
+  `0235221703` → `02:98:1C:8E:55:E0`…E7;
+  `090b131d04` → `02:9E:E6:97:4D:60`…67.
+- Реальный OTP текущей платы: `090b131d04`; два CLI preview совпали.
+  Существующие EEPROM MAC по-прежнему старые `02:32:EB:B8:E8:FA`…`02:32:EB:B8:E9:01`.
+  Новые MAC в реальную EEPROM **не записывались**.
+- Локально и на плате прошли **39 unittest**: vectors, no fallback, lock timeout
+  и release, open/seek/read/lock ошибки, serial/interface independence,
+  EEPROM offsets/CRC, skip duplicate write, TUI cancellation/yes, stale preview,
+  отдельные native settings и CLI production flow.
+- TUI preview проверен 120×40 и 60×24 с прокруткой; подтверждение отменено.
+  EEPROM/boot SHA256 совпадают с приведёнными выше значениями, reboot не выполнялся.
+
 ## Что дальше
 
 1. После обновления прошивки проверить отсутствие EEPROM sysfs-узла и наличие
@@ -125,3 +181,34 @@ NAME брать из `candidates[].name` первой команды. Допол
 Пользователь хочет видеть ход работы, общение на русском. Сохранять версии
 для отката и делать Git-коммит перед существенной переработкой. Не выполнять
 реальные EEPROM/boot записи или reboot просто ради проверки запуска.
+
+
+## Исправления v19 после замечаний пользователя
+
+Пользователь явно попросил **править v19**, новую v20 не создавать.
+Исходная полная запись EEPROM не была сломана: ошибка была в preview,
+который показывал только MAC. Теперь `Write EEPROM` показывает все поля
+Format v2 и CRC, пишет всю конфигурацию как прежде после yes.
+После подтверждённой генерации (и при повторном вызове с совпавшими RAM MAC)
+TUI сразу предлагает отдельную MAC-only запись с собственным preview/yes.
+Отказ не отменяет генерацию в памяти.
+
+`mac_eeprom_plan/apply_mac_eeprom_plan` читает фактическую валидную EEPROM,
+сохраняет остальные байты буквально (включая reserved/legacy bits и padding),
+меняет MAC48bytes, при необходимости count, пересчитывает CRC. Hardware пишет
+только диапазоны 0x17 (count), 0x38..0x67 (MAC), 0x68..0x6b (CRC последним);
+read-back проверяет все 108bytes записи. Изменившаяся после preview EEPROM
+отклоняется; подмена плана с изменением других полей отклоняется. Совпадение
+пропускает write. Для пустой/CRC-invalid EEPROM требуется полная инициализация.
+Новые CLI: `eeprom preview --config instance.json`,
+`mac write --config instance.json --yes` (сохраняет остальные EEPROM поля,
+даже если JSON содержит иные serial/board settings). Генерация CLI сама не пишет.
+Настройки native MAC/формат EEPROM/OTP алгоритм и номер версии не менялись.
+
+Проверка исправленной v19: **44 теста** прошли локально и на реальной плате.
+На плате full preview проверен в 120×40 и 60×24 с прокруткой.
+Генерация подтверждена только в памяти; после неё появился MAC-only EEPROM
+preview, затем отдельное yes-подтверждение записи, которое отменено ответом no.
+Реальную EEPROM/boot не записывали, SHA256 остались исходными, reboot не было.
+Исходная установка сохранена в `/root/v19-before-eeprom-fix-c3c8392`.
+Исправления установлены в существующий `/root/v19`; номер версии остался 19.

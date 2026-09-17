@@ -445,6 +445,7 @@ class UI:
         self.perform(operation, update=True)
 
     def generate_macs(self):
+        offer_write = []
         def operation():
             plan = self.service.mac_plan(self.cfg)
             text = ('RK3308 OTP ID: ' + plan['otp_id'] + '\nMAC source: ' + plan['source']
@@ -458,6 +459,7 @@ class UI:
                 self.view_text(text + '\n\nMAC addresses already match this SoC.')
                 self.last_mac_plan = plan
                 self.status = 'MAC addresses already match this SoC.'
+                offer_write.append(True)
                 return False
             if self.cfg.macs or (plan['eeprom_current'] and plan['eeprom_current']['macs']):
                 text += '\n\nMAC addresses already exist. Replacement requires confirmation.'
@@ -469,8 +471,37 @@ class UI:
                 return False
             candidate = self.service.apply_mac_plan(self.cfg, plan, confirmed=True)
             self.last_mac_plan = plan
+            offer_write.append(True)
             return candidate
         self.perform(operation, update=True)
+        if offer_write:
+            self.offer_mac_eeprom_write()
+
+    def offer_mac_eeprom_write(self):
+        def operation():
+            try:
+                plan = self.service.mac_eeprom_plan(self.cfg.macs)
+            except ValueError as exc:
+                self.view_text('MACs remain in memory.\n\n' + str(exc))
+                self.status = 'MACs in memory; MAC-only EEPROM write unavailable'
+                return False
+            if not plan['changed']:
+                self.status = 'EEPROM MAC addresses already match; no write needed'
+                return False
+            text = self.service.mac_eeprom_preview(plan)
+            source = getattr(self, 'last_mac_plan', None)
+            if source:
+                text = 'RK3308 OTP ID: ' + source['otp_id'] + '\nMAC source: ' + source['source'] + '\n\n' + text
+            if not self.view_text(text, offer_write=True, action_label='write MACs to EEPROM'):
+                self.status = 'MACs in memory; EEPROM write declined'
+                return False
+            if not self.confirm_yes('Write only MACs to EEPROM? mac_count and CRC are updated; other EEPROM fields are preserved.'):
+                self.status = 'MACs in memory; EEPROM write cancelled'
+                return False
+            self.service.apply_mac_eeprom_plan(plan, confirmed=True)
+            self.status = 'EEPROM MACs written and verified; other fields preserved'
+            return False
+        self.perform(operation)
 
     def view_macs(self):
         rows = self.service.mac_rows(self.cfg)
@@ -501,7 +532,7 @@ class UI:
 
     def write_eeprom(self):
         def operation():
-            text = self.service.eeprom_mac_preview(self.cfg)
+            text = self.service.eeprom_preview(self.cfg)
             plan = getattr(self, 'last_mac_plan', None)
             if plan and plan['generated']['macs'] == self.service.document(self.cfg)['macs']:
                 text = 'RK3308 OTP ID: ' + plan['otp_id'] + '\nMAC source: ' + plan['source'] + '\n\n' + text

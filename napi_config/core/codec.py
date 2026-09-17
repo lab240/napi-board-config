@@ -69,6 +69,17 @@ def decode_config(data: bytes, catalog) -> BoardConfig:
     cfg.macs=[area[i*6:(i+1)*6] for i in range(count)]
     return cfg
 
+def replace_eeprom_macs(data, macs, catalog):
+    # Preserve all original non-MAC bytes, including legacy/reserved mask bits.
+    decode_config(data, catalog)
+    if len(macs) != MAX_MACS or any(len(mac) != 6 for mac in macs):
+        raise ValueError('MAC-only write requires exactly eight six-byte MAC addresses')
+    body = bytearray(data[:EEPROM_CRC_OFFSET])
+    body[EEPROM_MAC_COUNT_OFFSET] = MAX_MACS
+    body[EEPROM_MAC_OFFSET:EEPROM_CRC_OFFSET] = b''.join(macs)
+    return bytes(body) + struct.pack('<I', zlib.crc32(body) & 0xffffffff)
+
+
 def overlays_for(cfg: BoardConfig, catalog):
     p = catalog.get(cfg.platform)
     mapping = p.get("overlays", {})

@@ -1,7 +1,8 @@
 from dataclasses import replace
 import re
-from .models import BoardConfig, IF_BY_KEY, RTC_CHOICES
-from .codec import encode_config, decode_config, overlays_for, platform_conflicts, format_mac
+from .models import (BoardConfig, IF_BY_KEY, RTC_CHOICES, EEPROM_HEADER,
+                     EEPROM_SIZE, EEPROM_MAC_COUNT_OFFSET, EEPROM_MAC_OFFSET, EEPROM_CRC_OFFSET)
+from .codec import encode_config, decode_config, overlays_for, platform_conflicts, format_mac, replace_eeprom_macs
 from .configuration import validate_configuration, updated, from_document, to_document, default_date
 from .mac import generate_macs, validate_otp, MAC_SOURCE, MAC_SLOT_LABELS, MacPolicy, mac_assignments, OTP_ERROR
 from .profiles import profile_to_config, config_to_profile
@@ -113,15 +114,73 @@ class BoardService:
         return [f'MAC{i + 1}  {MAC_SLOT_LABELS[i]:<18} {format_mac(mac)}'
                 for i, mac in enumerate(cfg.macs)]
 
-    def eeprom_mac_preview(self, cfg):
+    def eeprom_rows(self, data):
+        cfg = decode_config(data, self.catalog)
+        self.validate(cfg)
+        fields = EEPROM_HEADER.unpack(data[:EEPROM_HEADER.size])
+        rows = [f'Format version: {fields[1]}', f'Platform: {cfg.platform} (ID {fields[2]})',
+                f'Product ID: {cfg.product_id}', f'Product revision: {cfg.product_rev}',
+                f'Board name: {cfg.board_name}', f'Serial number: {cfg.serial_number}',
+                f'Manufacturing date: {cfg.mfg_date or "not set"}',
+                f'Interface mask: 0x{fields[5]:08X}']
+        rows += [f'{definition.title}: {"enabled" if key in cfg.enabled else "disabled"}'
+                 for key, definition in IF_BY_KEY.items()]
+        rows += [f'RTC on I2C1: {cfg.rtc_i2c1}', f'MAC count: {len(cfg.macs)}']
+        rows += self.mac_rows(cfg)
+        rows += [f'CRC32: 0x{int.from_bytes(data[EEPROM_CRC_OFFSET:EEPROM_SIZE], "little"):08X}']
+        return rows
+
+    def eeprom_preview(self, cfg):
         self.validate(cfg)
         try:
-            current = self.read_eeprom()
-            existing = '\n'.join(self.mac_rows(current)) or 'No MAC addresses'
+            self.require_eeprom()
+            existing = '\n'.join(self.eeprom_rows(self.eeprom.read()))
         except ValueError as exc:
             existing = 'No valid EEPROM configuration: ' + str(exc)
-        return ('Current EEPROM MACs:\n' + existing + '\n\nProposed EEPROM MACs:\n'
-                + ('\n'.join(self.mac_rows(cfg)) or 'No MAC addresses'))
+        return ('FULL EEPROM CONFIGURATION WRITE\n\nCurrent EEPROM:\n' + existing
+                + '\n\nProposed EEPROM:\n' + '\n'.join(self.eeprom_rows(encode_config(cfg, self.catalog)))
+                + '\n\nWrites all Format v2 fields shown above. Comment and boot settings are not stored in EEPROM.')
+
+    def mac_eeprom_plan(self, macs):
+        self.require_eeprom(write=True)
+        before = self.eeprom.read()[:EEPROM_SIZE]
+        try:
+            current = decode_config(before, self.catalog)
+            self.validate(current)
+        except ValueError as exc:
+            raise ValueError('MAC-only write requires a valid EEPROM configuration. Use Write EEPROM to initialize all fields.') from exc
+        candidate = replace(current, macs=list(macs), enabled=set(current.enabled))
+        self.validate(candidate)
+        after = replace_eeprom_macs(before, macs, self.catalog)
+        return {'before': before, 'after': after, 'changed': before != after,
+                'current': self.document(current), 'proposed': self.document(candidate)}
+
+    def mac_eeprom_preview(self, plan):
+        current = self.configuration_from_document(plan['current'])
+        proposed = self.configuration_from_document(plan['proposed'])
+        return ('WRITE MACs TO EEPROM\n\nCurrent:\n' + ('\n'.join(self.mac_rows(current)) or 'No MAC addresses')
+                + '\n\nProposed:\n' + '\n'.join(self.mac_rows(proposed))
+                + '\n\nOnly MAC fields, mac_count and CRC32 are written. All other EEPROM bytes are preserved.')
+
+    def apply_mac_eeprom_plan(self, plan, confirmed=False):
+        require_confirmation(confirmed)
+        self.require_eeprom(write=True)
+        if self.eeprom.read()[:EEPROM_SIZE] != plan['before']:
+            raise ValueError('EEPROM changed since MAC write preview')
+        cfg = decode_config(plan['after'], self.catalog)
+        self.validate(cfg)
+        if replace_eeprom_macs(plan['before'], cfg.macs, self.catalog) != plan['after']:
+            raise ValueError('MAC-only plan modifies other EEPROM fields')
+        if plan['before'] == plan['after']:
+            return False
+        spans = [(EEPROM_MAC_COUNT_OFFSET, EEPROM_MAC_COUNT_OFFSET + 1),
+                 (EEPROM_MAC_OFFSET, EEPROM_CRC_OFFSET), (EEPROM_CRC_OFFSET, EEPROM_SIZE)]
+        changes = [(start, plan['after'][start:end]) for start, end in spans
+                   if plan['before'][start:end] != plan['after'][start:end]]
+        self.eeprom.write_ranges(changes)
+        if self.eeprom.read()[:EEPROM_SIZE] != plan['after']:
+            raise OSError('EEPROM MAC read-back mismatch')
+        return True
 
     def mac_strings(self, cfg):
         return [format_mac(mac) for mac in cfg.macs]

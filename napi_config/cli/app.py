@@ -8,7 +8,7 @@ def parser():
     result = argparse.ArgumentParser(prog='napi-config')
     result.add_argument('--version', action='version', version='napi-config 19')
     groups = result.add_subparsers(dest='group', required=True)
-    actions = {'eeprom': ['show', 'write', 'overlays', 'enable'], 'mac': ['generate', 'preview', 'assignments'], 'board': ['info'], 'overlay': ['list'],
+    actions = {'eeprom': ['show', 'preview', 'write', 'overlays', 'enable'], 'mac': ['generate', 'preview', 'write', 'assignments'], 'board': ['info'], 'overlay': ['list'],
                'boot': ['show', 'preview', 'write'], 'hardware': ['detect'], 'tui': []}
     for group, names in actions.items():
         group_parser = groups.add_parser(group)
@@ -37,9 +37,10 @@ def parser():
                 command.add_argument('--overlay', required=True, help='Exact overlay name returned by eeprom overlays')
                 command.add_argument('--yes', action='store_true', help='Confirm chip, bus, address and boot write')
                 command.add_argument('--reboot', action='store_true', help='Reboot after confirmed setup')
-            if group == 'eeprom' and name == 'write':
+            if group == 'eeprom' and name in ('preview', 'write'):
                 command.add_argument('--config', required=True, help='Instance JSON configuration to write')
-                command.add_argument('--yes', action='store_true', help='Confirm EEPROM write')
+                if name == 'write':
+                    command.add_argument('--yes', action='store_true', help='Confirm EEPROM write')
     return result
 
 
@@ -59,6 +60,8 @@ def execute(args, service):
                     'warnings': plan['warnings'], 'reboot': args.reboot}
         if args.action == 'show':
             return service.document(service.read_eeprom())
+        if args.action == 'preview':
+            return {'preview': service.eeprom_preview(service.load_configuration(args.config))}
         written = service.write_eeprom(service.load_configuration(args.config), confirmed=args.yes)
         return {'written': written, 'verified': True}
     if args.group == 'boot' and args.action == 'show':
@@ -79,6 +82,10 @@ def execute(args, service):
     if args.group == 'mac':
         if args.action == 'assignments':
             return service.mac_assignments(cfg)
+        if args.action == 'write':
+            plan = service.mac_eeprom_plan(cfg.macs)
+            written = service.apply_mac_eeprom_plan(plan, confirmed=args.yes)
+            return {'written': written, 'verified': True, 'configuration': plan['proposed']}
         plan = service.mac_plan(cfg)
         if args.action == 'preview':
             return plan

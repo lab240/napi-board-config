@@ -18,9 +18,13 @@ class LinuxEeprom:
         return {'enabled': True, 'reason': ''}
 
     def write(self, data):
+        self.write_ranges([(0, data)])
+
+    def write_ranges(self, changes):
         with self.path.open('r+b', buffering=0) as stream:
-            stream.seek(0)
-            written = stream.write(data)
-            if written != len(data):
-                raise OSError('Incomplete EEPROM write')
+            for offset, data in changes:
+                stream.seek(offset)
+                written = stream.write(data)
+                if written != len(data):
+                    raise OSError('Incomplete EEPROM write')
             os.fsync(stream.fileno())

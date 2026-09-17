@@ -131,6 +131,40 @@ class CliTests(unittest.TestCase):
             self.assertEqual(output.read_text(), document)
             self.assertEqual(eeprom.read_bytes(), before)
 
+    def test_mac_only_write_preserves_eeprom_config_and_requires_yes(self):
+        from napi_config.bootstrap import create_service
+        from napi_config.core.models import BoardConfig
+        from napi_config.core.mac import generate_macs
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            eeprom = root / 'eeprom'
+            eeprom.write_bytes(b'\xff' * 256)
+            service = create_service(eeprom_path=str(eeprom))
+            stored = BoardConfig(serial_number=100, board_name='Stored board', enabled={'uart4'})
+            service.write_eeprom(stored, confirmed=True)
+            before = eeprom.read_bytes()
+            cfg = BoardConfig(serial_number=999, board_name='Unsaved board',
+                              macs=generate_macs(bytes.fromhex('0235221703')))
+            instance = root / 'instance.json'
+            service.save_configuration(str(instance), cfg, confirmed=True)
+            common = ['--eeprom', str(eeprom), '--config', str(instance), '--json']
+            preview = self.run_cli('eeprom', 'preview', *common)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertIn('Serial number: 999', json.loads(preview.stdout)['preview'])
+            denied = self.run_cli('mac', 'write', *common)
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertEqual(eeprom.read_bytes(), before)
+            applied = self.run_cli('mac', 'write', '--yes', *common)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            actual = service.read_eeprom()
+            self.assertEqual(actual.serial_number, 100)
+            self.assertEqual(actual.board_name, 'Stored board')
+            self.assertEqual(actual.enabled, {'uart4'})
+            self.assertEqual(actual.macs, cfg.macs)
+            again = self.run_cli('mac', 'write', '--yes', *common)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertFalse(json.loads(again.stdout)['written'])
+
     def test_invalid_eeprom_has_error_and_no_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bad'

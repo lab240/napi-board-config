@@ -39,9 +39,11 @@ napi-config --help
 | `napi-config eeprom overlays` | Показать доступность EEPROM и стандартные оверлеи для включения |
 | `napi-config eeprom enable --overlay eeprom24 --yes` | Добавить выбранный стандартный оверлей и I2C1, без reboot |
 | `napi-config eeprom show` | Прочитать EEPROM и проверить формат, CRC и значения |
+| `napi-config eeprom preview --config instance.json` | Показать все текущие и предлагаемые поля EEPROM без записи |
 | `napi-config eeprom write --config instance.json --yes` | Записать конфигурацию и проверить чтением |
 | `napi-config mac preview --json` | Прочитать OTP и показать текущие/генерируемые MAC без изменений |
 | `napi-config mac generate --yes --output instance.json` | Сформировать восемь стабильных MAC из OTP и сохранить JSON |
+| `napi-config mac write --config instance.json --yes` | Обновить только MAC, mac_count и CRC в корректной EEPROM |
 | `napi-config mac assignments --config instance.json --json` | Показать назначения фиксированных MAC-слотов |
 | `napi-config board info` | Показать конфигурацию и данные экземпляра из EEPROM |
 | `napi-config overlay list` | Сформировать список overlays по конфигурации EEPROM |
@@ -152,8 +154,19 @@ serial и официальный IEEE-блок CominTech не использую
 
 TUI `Generate MACs` сначала показывает OTP, источник и текущие/новые MAC.
 q/Esc отменяет, Enter открывает подтверждение точным `yes` (по умолчанию отмена).
-Генерация меняет только память; `Write EEPROM` отдельно показывает текущие
-EEPROM MAC и предлагаемые значения, затем требует `yes`. Совпадающая целиком
+После подтверждения генерации MAC меняются в памяти и сразу предлагается
+отдельная запись только MAC в EEPROM, с текущими/новыми адресами и ещё одним
+`yes`. Отказ сохраняет адреса в памяти. Обновляются MAC (`0x38..0x67`),
+при необходимости mac_count (`0x17`) и CRC (`0x68..0x6B`); прочие байты,
+включая serial, дату, имя, конфигурацию интерфейсов и резервные биты, сохраняются.
+CRC записывается последним, результат проверяется чтением. При совпадении
+MAC записи нет. Если EEPROM пустая/некорректная, MAC-only запись отклоняется:
+её сначала нужно инициализировать полной конфигурацией.
+
+`Write EEPROM` остаётся полной записью. Просмотр показывает все текущие и
+предлагаемые поля Format v2: платформу, product ID/revision, имя, serial, дату,
+маску/интерфейсы, RTC, mac_count, все MAC и CRC. Затем требуется `yes`.
+Comment и строки загрузчика не входят в EEPROM. Совпадающая целиком
 EEPROM-конфигурация повторно не записывается. CLI требует `--yes`; для просмотра
 служит `mac preview`. После генерации записываются все 8 слотов и штатный CRC32.
 
