@@ -5,7 +5,7 @@ from ..core.models import INTERFACES, IF_BY_KEY
 
 class UI:
     ACTIONS = [("action", key) for key in (
-        "read", "write_eeprom", "profile_load", "profile_add", "profile_delete",
+        "view_eeprom", "read", "write_eeprom", "profile_load", "profile_add", "profile_delete",
         "github_db", "view_generate_macs", "write_env")]
     SERVICES = [("action", key) for key in (
         "load_defaults", "reset_eeprom", "reset_processor", "enable_i2c1_eeprom", "quit")]
@@ -76,6 +76,7 @@ class UI:
     def action_label(self, key):
         label = {
             "load_defaults": "[ Load defaults ]",
+            "view_eeprom": "[ View EEPROM ]",
             "read": "[ Load EEPROM ]",
             "write_eeprom": "[ Write EEPROM ]",
             "write_env": "[ View and write boot config ]",
@@ -122,9 +123,9 @@ class UI:
                 info = self.processor_info
                 if info['state'] == 'OTP UNAVAILABLE':
                     return 'Processor ID : OTP UNAVAILABLE'
-                suffix = ('not in EEPROM' if info['state'] == 'NOT BOUND' else 'in EEPROM'
+                suffix = ('not in EEPROM' if info['state'] == 'NOT BOUND' else ''
                           if info['state'] == 'MATCH' else 'PROCESSOR MISMATCH; EEPROM: ' + info['stored_id'])
-                return 'Processor ID : ' + info['current_id'] + ' (' + suffix + ')'
+                return 'Processor ID : ' + info['current_id'] + (' (' + suffix + ')' if suffix else '')
             if key == "serial_number":
                 return f"Serial number: {self.cfg.serial_number:08d}"
             if key == "mfg_date":
@@ -145,7 +146,7 @@ class UI:
 
     def draw(self):
         self.action_states = {key: self.service.action_status(self.cfg, key)
-                              for key in ('read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env',
+                              for key in ('view_eeprom', 'read', 'write_eeprom', 'enable_i2c1_eeprom', 'view_boot', 'write_env',
                                           'reset_processor', 'reset_eeprom')}
         try:
             info = self.service.boot_info()
@@ -164,7 +165,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v20 "
+        title = " NAPI Board Config v21 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -270,6 +271,7 @@ class UI:
             self.edit_instance(key); return False
         {
             "load_defaults":self.load_defaults,
+            "view_eeprom":self.view_eeprom,
             "read":self.read_eeprom,
             "write_eeprom":self.write_eeprom,
             "write_env":self.write_env,
@@ -603,6 +605,12 @@ class UI:
             else:
                 self.status = 'DB update cancelled'
                 return False
+        self.perform(operation)
+
+    def view_eeprom(self):
+        def operation():
+            self.view_text(self.service.eeprom_view())
+            return False
         self.perform(operation)
 
     def read_eeprom(self):

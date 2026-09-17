@@ -110,6 +110,34 @@ class ResetTests(unittest.TestCase):
         self.assertTrue(json.loads(written.stdout)['verified'])
         self.assertEqual(self.service.read_eeprom(), replace(self.cfg, proc_id_type=0, proc_id=b''))
 
+    def test_view_eeprom_reads_actual_data_without_changing_draft(self):
+        before = self.store(self.cfg)
+        ui = UI(Mock(), self.service)
+        ui.cfg = replace(self.cfg, serial_number=999, board_name='Unsaved')
+        draft = ui.cfg
+        ui.view_text = Mock()
+        ui.view_eeprom()
+        text = ui.view_text.call_args.args[0]
+        self.assertIn('Serial number: 1234', text)
+        self.assertIn('CRC32: valid', text)
+        self.assertIn(self.otp.hex(), text)
+        self.assertIs(ui.cfg, draft)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(ui.config_text('instance', 'processor_binding'), 'Processor ID : ' + self.otp.hex())
+        corrupt = bytearray(before)
+        corrupt[16] ^= 1
+        self.path.write_bytes(corrupt)
+        ui.view_eeprom()
+        text = ui.view_text.call_args.args[0]
+        self.assertIn('CRC mismatch', text)
+        self.assertIn('Raw EEPROM:', text)
+        self.assertNotIn('CRC32: valid', text)
+        self.assertIs(ui.cfg, draft)
+        self.path.write_bytes(bytes(256))
+        ui.view_eeprom()
+        self.assertIn('EEPROM empty', ui.view_text.call_args.args[0])
+        self.assertIs(ui.cfg, draft)
+
     def test_reset_and_new_configuration(self):
         for cfg in (self.cfg, replace(self.cfg, format_version=2, proc_id_type=0, proc_id=b'')):
             before = self.store(cfg)

@@ -136,11 +136,14 @@ def overlays_for(cfg: BoardConfig, catalog):
     prefix = str(p.get("overlay_prefix", "")).strip()
     enabled = set(cfg.enabled)
 
-    rtc_key = "i2c1" if cfg.rtc_i2c1 == "none" else f"rtc_{cfg.rtc_i2c1}"
     overlays = []
-    rtc_overlay = mapping.get(rtc_key)
-    if rtc_overlay and "i2c1" in enabled:
-        overlays.append(str(rtc_overlay))
+    if "i2c1" in enabled:
+        if mapping.get("i2c1"):
+            overlays.append(str(mapping["i2c1"]))
+        if cfg.rtc_i2c1 != "none":
+            rtc_overlay = mapping.get(f"rtc_{cfg.rtc_i2c1}")
+            if rtc_overlay:
+                overlays.append(str(rtc_overlay))
     enabled.discard("i2c1")
 
     if "w5500_spi1" in enabled:

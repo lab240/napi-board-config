@@ -18,7 +18,7 @@ class CliTests(unittest.TestCase):
             overlays = boot / 'dtb/rockchip/overlay'
             overlays.mkdir(parents=True)
             (boot / 'armbianEnv.txt').write_text('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\n')
-            for name in ['i2c1-ds1338', 'i2c3-m0', 'usb20-host', 'uart1', 'uart2-m0', 'uart4', 'spi1-w5500']:
+            for name in ['i2c1', 'i2c1-ds1338', 'i2c3-m0', 'usb20-host', 'uart1', 'uart2-m0', 'uart4', 'spi1-w5500']:
                 (overlays / ('rk3308-' + name + '.dtbo')).touch()
             eeprom = Path(directory) / 'eeprom'
             eeprom.write_bytes(b'\xff' * 256)

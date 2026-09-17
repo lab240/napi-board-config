@@ -190,6 +190,19 @@ class BoardService:
         return [f'{label:<24} {value}' if label.startswith('MAC') and label != 'MAC count'
                 else f'{label}: {value}' for label, value in self.eeprom_fields(data)]
 
+    def eeprom_view(self):
+        self.require_eeprom()
+        image = self.eeprom.read()
+        try:
+            rows = self.eeprom_rows(image)
+        except ValueError as exc:
+            empty = len(image) == 256 and image in (bytes(256), b'\xff' * 256)
+            status = 'EEPROM empty / uninitialized' if empty else 'EEPROM invalid: ' + str(exc)
+            dump = [f'{offset:02X}: ' + image[offset:offset + 16].hex(' ')
+                    for offset in range(0, len(image), 16)]
+            return status + '\nFields and CRC are not validated.\n\nRaw EEPROM:\n' + '\n'.join(dump)
+        return 'CURRENT EEPROM\nCRC32: valid\n\n' + '\n'.join(rows)
+
     def eeprom_comparison(self, cfg):
         self.validate(cfg)
         error = ''
@@ -619,9 +632,9 @@ class BoardService:
                 'boot_file': info['path'], 'candidates': candidates, 'message': message}
 
     def action_status(self, cfg, action):
-        if action in ('read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom',
+        if action in ('view_eeprom', 'read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom',
                       'write_processor', 'reset_eeprom', 'reset_processor'):
-            return self.eeprom_status(write=action not in ('read', 'view_processor'))
+            return self.eeprom_status(write=action not in ('view_eeprom', 'read', 'view_processor'))
         if action not in ('enable_i2c1_eeprom', 'view_boot', 'write_env'):
             return {'enabled': True, 'reason': ''}
         try:

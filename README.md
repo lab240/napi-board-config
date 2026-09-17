@@ -1,4 +1,4 @@
-# NAPI Board Config v20
+# NAPI Board Config v21
 
 Утилита для настройки плат NAPI под Armbian и NapiLinux/U-Boot.
 Позволяет читать и записывать EEPROM, выбирать профиль платы, задавать серийный
@@ -165,7 +165,7 @@ CRC32 покрывает `0x00..0x79` и хранится little endian в `0x7A
 это проверяется доступностью устройства. EEPROM overlay сама не добавляется.
 
 TUI показывает текущий OTP и состояние привязки: `(not in EEPROM)`,
-`(in EEPROM)`, `PROCESSOR MISMATCH` или `OTP UNAVAILABLE`.
+`PROCESSOR MISMATCH` или `OTP UNAVAILABLE`; при совпадении ID выводится без пометки.
 При полной `Write EEPROM`, если привязки ещё нет, Core включает текущий OTP
 в предлагаемые значения. Он записывается вместе с конфигурацией после `yes`.
 Существующий ID не заменяется молча. После замены SoC используйте
@@ -176,7 +176,7 @@ TUI показывает текущий OTP и состояние привязк
 В широком терминале ACTIONS слева и SERVICE справа. Стрелки влево/вправо
 переключают списки, вверх/вниз перемещают выбор; навигация циклическая.
 В узком терминале пункты показаны одним столбцом, SERVICE после конфигурации.
-ACTIONS: Load EEPROM, Write EEPROM, Load/Save/Delete board from local DB,
+ACTIONS: View EEPROM, Load EEPROM, Write EEPROM, Load/Save/Delete board from local DB,
 Load DB from GitHub, View and generate MACs, View and write boot config.
 SERVICE: Load defaults, Reset EEPROM, Reset processor ID,
 Add EEPROM overlay and reboot, Quit.
@@ -288,3 +288,14 @@ python3 -B -m unittest discover -s tests -v
 Тесты работают на временных файлах и подставных адаптерах.
 Подробности структуры — в [ARCHITECTURE.md](ARCHITECTURE.md).
 Лицензия — [MIT](LICENSE).
+
+### Изменения v21
+
+- View EEPROM показывает фактические поля и результат проверки CRC, сохраняя
+  текущие настройки меню. Для пустой или повреждённой EEPROM показывает причину
+  и сырые байты без интерпретации их как корректной конфигурации.
+- При совпадении processor ID с OTP штатная пометка `in EEPROM` убрана.
+- Выбранный I2C1 добавляет самостоятельный overlay `i2c1`; выбранный RTC добавляет
+  свой overlay дополнительно, например `overlays=i2c1 i2c1-ds1338`.
+  Префикс по-прежнему определяется из boot-файла.
+- Установка на NAPI-C: `/root/v21`; предыдущая `/root/v20` сохранена.

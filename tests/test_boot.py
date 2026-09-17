@@ -34,6 +34,16 @@ class BootTests(unittest.TestCase):
         for name in names:
             (self.stock / (name + '.dtbo')).touch()
 
+    def test_i2c1_and_rtc_are_both_in_proposal(self):
+        self.env('overlay_prefix=napi-rk3308\n')
+        self.files('napi-rk3308-i2c1', 'napi-rk3308-i2c1-ds1338')
+        cfg = BoardConfig(enabled={'i2c1'}, rtc_i2c1='ds1338')
+        plan = self.service.boot_plan(cfg)
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=i2c1 i2c1-ds1338')
+        self.assertEqual(plan['warnings'], [])
+        cfg.rtc_i2c1 = 'none'
+        self.assertEqual(self.service.boot_plan(cfg)['proposed_overlay_string'], 'overlays=i2c1')
+
     def test_armbian_runtime_prefix_and_alias(self):
         path = self.env('overlay_prefix=napi-rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\nother=preserve\n')
         self.files('napi-rk3308-i2c1', 'napi-rk3308-otg-host')
@@ -71,7 +81,7 @@ class BootTests(unittest.TestCase):
         plan = self.service.boot_plan(cfg)
         self.assertNotIn('overlay_prefix=', plan['after'])
         self.assertIn('#overlays=rk3308-uart1', plan['after'])
-        self.assertIn('overlays=rk3308-i2c1-ds1338 rk3308-usb20-host rk3308-spi2-w5500', plan['after'])
+        self.assertIn('overlays=rk3308-i2c1 rk3308-i2c1-ds1338 rk3308-usb20-host rk3308-spi2-w5500', plan['after'])
 
     def test_missing_overlay_warns_and_can_be_written_after_confirmation(self):
         path = self.env('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\nuser_overlays=custom-any-name  another-name  \n')
