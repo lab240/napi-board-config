@@ -165,7 +165,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v21 "
+        title = " NAPI Board Config v22 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
