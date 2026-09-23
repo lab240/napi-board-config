@@ -3,6 +3,7 @@ platforms:
   rk3308:
     id: 1
     overlay_prefix: rk3308
+    eeprom_overlay: i2c1-at24
     overlays:
       i2c0: i2c0
       i2c1: i2c1

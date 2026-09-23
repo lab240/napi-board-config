@@ -600,7 +600,7 @@ class BoardService:
     @staticmethod
     def is_eeprom_overlay(name):
         # Names identify candidates only. User must verify the actual chip/address.
-        return bool(re.search(r'(?:eeprom|(?:^|[-_])(?:at)?24c?[0-9]+)', name.lower()))
+        return bool(re.search(r'(?:eeprom|(?:^|[-_])at24(?:$|[-_])|(?:^|[-_])(?:at)?24c?[0-9]+)', name.lower()))
 
     def eeprom_overlay_candidates(self, platform, info=None):
         self.catalog.get(platform)
@@ -621,15 +621,21 @@ class BoardService:
         available = self.eeprom_status()
         info = self.boot_info()
         candidates = self.eeprom_overlay_candidates(platform, info)
+        logical = self.catalog.get(platform).get('eeprom_overlay', 'i2c1-at24')
+        full = (info['overlay_prefix'] or platform) + '-' + logical
+        preferred = next((candidate for candidate in candidates if candidate['file'] == full + '.dtbo'), None)
         if available['enabled']:
             message = 'EEPROM is already accessible; an additional overlay is not required'
+        elif preferred:
+            message = 'Enable standard ' + preferred['file'] + ' in overlays= of ' + info['path'] + '; confirmation is required'
         elif candidates:
             message = 'Select a standard overlay only after verifying EEPROM model, I2C bus and address'
         else:
-            message = ('No standard EEPROM overlay found. Install and configure a suitable overlay manually '
-                       'using user_overlays. User overlay files and user_overlays are not modified.')
+            message = ('No standard EEPROM overlay found: expected ' + full + '.dtbo. '
+                       'Check the firmware standard overlay installation under /boot. '
+                       'user_overlays is not modified.')
         return {'available': available['enabled'], 'reason': available['reason'],
-                'boot_file': info['path'], 'candidates': candidates, 'message': message}
+                'boot_file': info['path'], 'candidates': candidates, 'preferred': preferred, 'message': message}
 
     def action_status(self, cfg, action):
         if action in ('view_eeprom', 'read', 'write_eeprom', 'view_processor', 'bind_processor', 'rebind_processor', 'migrate_eeprom',
@@ -728,7 +734,7 @@ class BoardService:
         if eeprom_overlay is not None:
             candidates = self.eeprom_overlay_candidates(cfg.platform, info)
             if eeprom_overlay not in {candidate['name'] for candidate in candidates}:
-                raise ValueError('Selected standard EEPROM overlay not found; configure user_overlays manually if needed')
+                raise ValueError('Selected standard EEPROM overlay not found; check the firmware standard overlays under /boot')
             p = self.catalog.get(cfg.platform)
             variants = [p['overlays']['i2c1']] + [p['overlays'][f'rtc_{rtc}'] for rtc in RTC_CHOICES[1:] if f'rtc_{rtc}' in p['overlays']]
             names = info['values'].get('overlays', '').split()

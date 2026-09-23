@@ -382,7 +382,7 @@ class UI:
             if setup['available'] or not setup['candidates']:
                 self.view_text(setup['message'])
                 return False
-            candidate = self.choose_eeprom_overlay(setup['candidates'])
+            candidate = setup['preferred'] or self.choose_eeprom_overlay(setup['candidates'])
             if candidate is None:
                 self.status = 'EEPROM setup cancelled'
                 return False

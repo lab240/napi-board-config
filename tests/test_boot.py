@@ -154,6 +154,60 @@ class BootTests(unittest.TestCase):
         info = self.service.overlays(BoardConfig(enabled={'i2c1', 'usb_host'}))
         self.assertIn('rk3308-usb20-host.dtbo', info['warnings'][0])
 
+    def test_standard_at24_on_armbian_and_yocto(self):
+        self.eeprom.unlink()
+        cases = [('armbianEnv.txt', 'napi-rk3308', 'i2c1-at24', 'i2c1'),
+                 ('uEnv.txt', '', 'rk3308-i2c1-at24', 'rk3308-i2c1')]
+        for filename, prefix, overlay, bus in cases:
+            with self.subTest(filename=filename):
+                original = ('overlay_prefix=' + prefix + '\n' if prefix else '')
+                original += 'overlays=existing\nuser_overlays=arbitrary  name\n'
+                path = self.env(original, filename)
+                full = (prefix or 'rk3308') + '-i2c1-at24'
+                self.files(full, (prefix or 'rk3308') + '-i2c1')
+                setup = self.service.eeprom_setup('rk3308')
+                self.assertEqual(setup['preferred']['name'], overlay)
+                self.assertTrue(self.service.action_status(BoardConfig(), 'enable_i2c1_eeprom')['enabled'])
+                plan = self.service.boot_plan(BoardConfig(), eeprom_overlay=overlay)
+                self.assertEqual(plan['proposed_overlay_string'], f'overlays={bus} existing {overlay}')
+                self.assertEqual(plan['proposed_user_overlay_string'], 'user_overlays=arbitrary  name')
+                with self.assertRaisesRegex(ValueError, 'confirmation'):
+                    self.service.apply_boot_plan(plan)
+                self.assertEqual(path.read_text(), original)
+                backup = self.service.apply_boot_plan(plan, confirmed=True)
+                self.assertEqual(Path(backup).read_text(), original)
+                self.assertEqual(path.read_text(), plan['after'])
+                self.assertFalse(self.service.boot_plan(BoardConfig(), eeprom_overlay=overlay)['changed'])
+                normal = self.service.boot_plan(BoardConfig(enabled={'i2c1'}))
+                self.assertIn(overlay, normal['proposed_overlay_string'].split('=', 1)[1].split())
+                self.assertEqual(normal['proposed_user_overlay_string'], 'user_overlays=arbitrary  name')
+                path.unlink()
+
+    def test_at24_preferred_without_selecting_or_writing_on_cancel(self):
+        path = self.env('overlay_prefix=napi-rk3308\nuser_overlays=custom\n')
+        self.eeprom.unlink()
+        self.files('napi-rk3308-i2c1-at24', 'napi-rk3308-eeprom24', 'napi-rk3308-i2c1')
+        ui = UI(Mock(), self.service)
+        ui.choose_eeprom_overlay = Mock(side_effect=AssertionError('Should use standard at24'))
+        ui.preview_boot = Mock(return_value=True)
+        ui.confirm_yes = Mock(return_value=False)
+        self.service.apply_boot_plan = Mock()
+        self.service.reboot = Mock()
+        before = path.read_text()
+        ui.enable_i2c1_eeprom()
+        self.assertEqual(ui.preview_boot.call_args.args[0]['eeprom_overlay'], 'i2c1-at24')
+        ui.confirm_yes.assert_called_once()
+        self.service.apply_boot_plan.assert_not_called()
+        self.service.reboot.assert_not_called()
+        self.assertEqual(path.read_text(), before)
+        (self.stock / 'napi-rk3308-i2c1-at24.dtbo').unlink()
+        (self.stock / 'napi-rk3308-eeprom24.dtbo').unlink()
+        (self.user / 'napi-rk3308-i2c1-at24.dtbo').touch()
+        setup = self.service.eeprom_setup('rk3308')
+        self.assertIsNone(setup['preferred'])
+        self.assertIn('expected napi-rk3308-i2c1-at24.dtbo', setup['message'])
+        self.assertFalse(self.service.action_status(BoardConfig(), 'enable_i2c1_eeprom')['enabled'])
+
     def test_eeprom_in_base_dtb_and_standard_only_candidates(self):
         self.env('overlay_prefix=rk3308\n')
         self.assertTrue(self.service.action_status(BoardConfig(), 'read')['enabled'])
