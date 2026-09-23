@@ -165,7 +165,7 @@ class UI:
             s.refresh()
             return
 
-        title = " NAPI Board Config v22 "
+        title = " NAPI Board Config v23 "
         try:
             s.addnstr(0, max(0,(w-len(title))//2), title, w-1, curses.A_BOLD)
         except curses.error:
@@ -237,6 +237,13 @@ class UI:
             kind, key = self.rows[self.cursor]
             state = self.action_states.get(key, {}) if kind == 'action' else {}
             message = 'disabled: ' + state['reason'] if state.get('enabled') is False else self.status
+            if kind in ('iface', 'rtc'):
+                try:
+                    warnings = self.service.overlays(self.cfg)['warnings']
+                    if warnings:
+                        message = 'WARNING: ' + '; '.join(warnings)
+                except (ValueError, OSError) as exc:
+                    message = str(exc)
             s.addnstr(h-2,1,message,max(1,w-2))
             nav="Arrows move  Space toggle  Enter select  q quit  Ctrl-C exit"
             s.addnstr(h-1,1,nav,max(1,w-2),curses.A_DIM)
@@ -259,7 +266,6 @@ class UI:
             state = self.service.action_status(self.cfg, key)
             if not state['enabled']:
                 self.status = 'disabled: ' + state['reason']
-                self.view_text(self.status)
                 return False
         if kind=="field":
             self.edit_field(key); return False
@@ -651,8 +657,12 @@ class UI:
             if not wants_write:
                 self.status = 'View only; boot file unchanged'
                 return False
-            if self.confirm_yes('Write proposed boot config? Backup will be created. No reboot.'):
-                self.service.apply_boot_plan(plan, confirmed=True)
+            if self.confirm_yes('Write proposed boot config? Backup will be created.'):
+                backup = self.service.apply_boot_plan(plan, confirmed=True)
+                if backup is not None and self.confirm_yes('Boot config saved and verified. Reboot now?'):
+                    self.service.reboot(confirmed=True)
+                self.status = 'Boot config saved; changes take effect after reboot'
+                return False
             else:
                 self.status = 'Boot write cancelled'
                 return False

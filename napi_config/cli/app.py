@@ -6,7 +6,7 @@ import sys
 def parser():
     from ..bootstrap import DEFAULT_DB, DEFAULT_EEPROM, DEFAULT_PLATFORMS, DEFAULT_SETTINGS, DEFAULT_OTP
     result = argparse.ArgumentParser(prog='napi-config')
-    result.add_argument('--version', action='version', version='napi-config 22')
+    result.add_argument('--version', action='version', version='napi-config 23')
     groups = result.add_subparsers(dest='group', required=True)
     actions = {'eeprom': ['show', 'preview', 'write', 'reset', 'migrate', 'overlays', 'enable'],
                'processor': ['status', 'write', 'bind', 'rebind', 'reset'],

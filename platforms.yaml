@@ -20,7 +20,7 @@ platforms:
       rtc_ds1338: i2c1-ds1338
       rtc_ds3231: i2c1-ds3231
     overlay_aliases:
-      usb20-host: [otg-host]
+      usb20-host: [usb2-host, otg-host]
     conflicts:
       spi1: [w5500_spi1, uart3]
       spi2: [w5500_spi2, uart1, uart2]

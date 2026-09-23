@@ -567,16 +567,24 @@ class BoardService:
             raise ValueError(f'Overlay mapping not found for: {", ".join(sorted(missing))}')
         names = [resolve_overlay(name, cfg.platform, boot['overlay_prefix'], boot['overlay_files'],
                                  p.get('overlay_aliases', {})) for name in overlays_for(cfg, self.catalog)]
+        warnings = self.overlay_warnings(names, boot)
+        names = self.existing_overlays(names, boot)
         return {'platform': cfg.platform, 'boot_file': boot['path'], 'overlay_prefix': boot['overlay_prefix'],
                 'overlays': names, 'user_overlays': boot['values'].get('user_overlays', '').split(),
-                'warnings': self.overlay_warnings(names, boot)}
+                'warnings': warnings}
+
+    @staticmethod
+    def existing_overlays(names, info):
+        prefix = info['overlay_prefix']
+        return [name for name in names
+                if (prefix + '-' + name if prefix else name) in info['overlay_files']]
 
     def overlay_warnings(self, names, info):
         warnings = []
         for name in names:
             full = info['overlay_prefix'] + '-' + name if info['overlay_prefix'] else name
             if full not in info['overlay_files']:
-                warnings.append(f'{full}.dtbo not found in standard overlay directories; a user overlay may provide this hardware')
+                warnings.append(f'{full}.dtbo not found in standard overlay directories; not added to overlays=. Hardware may be enabled by the base DTB or a user overlay')
         return warnings
 
     def initial_configuration(self):
@@ -731,6 +739,7 @@ class BoardService:
         self.validate(cfg)
         info = self.boot_info()
         old = info['content']
+        warnings = []
         if eeprom_overlay is not None:
             candidates = self.eeprom_overlay_candidates(cfg.platform, info)
             if eeprom_overlay not in {candidate['name'] for candidate in candidates}:
@@ -744,11 +753,19 @@ class BoardService:
                 names = [chosen] + names
             names = list(dict.fromkeys(names + [eeprom_overlay]))
         else:
-            names = self.overlays(cfg)['overlays']
+            resolved = self.overlays(cfg)
+            names = resolved['overlays']
+            warnings = resolved['warnings']
             # Keep explicitly configured standard EEPROM support when its bus is enabled.
             if 'i2c1' in cfg.enabled:
                 names = list(dict.fromkeys(names + [name for name in info['values'].get('overlays', '').split()
                                                     if self.is_eeprom_overlay(name)]))
+        warnings = list(dict.fromkeys(warnings + self.overlay_warnings(names, info)))
+        if eeprom_overlay is None:
+            names = self.existing_overlays(names, info)
+        else:
+            previous = info['values'].get('overlays', '').split()
+            names = [name for name in names if name in previous or self.existing_overlays([name], info)]
         new = patch_boot(old, names)
         return {'target': info['path'], 'before': old, 'after': new,
                 'overlay_prefix': info['overlay_prefix'], 'changed': old != new,
@@ -756,14 +773,14 @@ class BoardService:
                 'proposed_overlay_string': 'overlays=' + ' '.join(names),
                 'current_user_overlay_string': 'user_overlays=' + info['values'].get('user_overlays', ''),
                 'proposed_user_overlay_string': 'user_overlays=' + boot_values(new).get('user_overlays', ''),
-                'warnings': self.overlay_warnings(names, info), 'eeprom_overlay': eeprom_overlay}
+                'warnings': warnings, 'eeprom_overlay': eeprom_overlay}
 
     def boot_comparison(self, plan):
         before, after = plan['before'].splitlines(), plan['after'].splitlines()
         proposed = [(f'Line {i + 1}', line) for i, line in enumerate(after)]
         current = {f'Line {i + 1}': line for i, line in enumerate(before)}
         comparison = self.configuration_comparison(current, proposed, 'VIEW AND WRITE BOOT CONFIG',
-            'Full file preview. Only overlays= is changed; other lines are preserved. No reboot.')
+            'Full file preview. Only overlays= is changed; other lines are preserved. Writing does not reboot automatically.')
         comparison.update(proposed_label='Proposed boot file', current_label='Current boot file')
         return comparison
 
@@ -775,6 +792,10 @@ class BoardService:
         values = boot_values(plan['after'])
         if values.get('overlay_prefix', '') != info['overlay_prefix']:
             raise ValueError('Boot overlay prefix changed since preview')
+        added = set(values.get('overlays', '').split()) - set(info['values'].get('overlays', '').split())
+        missing = self.overlay_warnings(added, info)
+        if missing:
+            raise ValueError('Overlay files changed since preview: ' + '; '.join(missing))
         if plan.get('eeprom_overlay'):
             name = plan['eeprom_overlay']
             full = info['overlay_prefix'] + '-' + name if info['overlay_prefix'] else name

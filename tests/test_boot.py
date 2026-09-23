@@ -75,7 +75,7 @@ class BootTests(unittest.TestCase):
         self.env('fdtfile=rk3308-napi-c.dtb\n#overlays=rk3308-uart1\nverbosity=7\n', 'uEnv.txt')
         directory = self.root / 'dtb/overlay'
         directory.mkdir()
-        for name in ['rk3308-i2c1-ds1338', 'rk3308-spi2-w5500', 'rk3308-usb20-host']:
+        for name in ['rk3308-i2c1', 'rk3308-i2c1-ds1338', 'rk3308-spi2-w5500', 'rk3308-usb20-host']:
             (directory / (name + '.dtbo')).touch()
         cfg = BoardConfig(enabled={'i2c1', 'w5500_spi2', 'usb_host'}, rtc_i2c1='ds1338')
         plan = self.service.boot_plan(cfg)
@@ -83,12 +83,12 @@ class BootTests(unittest.TestCase):
         self.assertIn('#overlays=rk3308-uart1', plan['after'])
         self.assertIn('overlays=rk3308-i2c1 rk3308-i2c1-ds1338 rk3308-usb20-host rk3308-spi2-w5500', plan['after'])
 
-    def test_missing_overlay_warns_and_can_be_written_after_confirmation(self):
+    def test_missing_overlay_is_excluded_and_warns(self):
         path = self.env('overlay_prefix=rk3308\nfdtfile=rockchip/rk3308-napi-c.dtb\nuser_overlays=custom-any-name  another-name  \n')
         original = path.read_text()
         plan = self.service.boot_plan(BoardConfig(enabled={'i2c1'}))
         self.assertIn('rk3308-i2c1.dtbo', plan['warnings'][0])
-        self.assertEqual(plan['proposed_overlay_string'], 'overlays=i2c1')
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=')
         self.assertEqual(plan['current_user_overlay_string'], 'user_overlays=custom-any-name  another-name')
         self.assertEqual(plan['proposed_user_overlay_string'], plan['current_user_overlay_string'])
         ui = UI.__new__(UI)
@@ -101,7 +101,52 @@ class BootTests(unittest.TestCase):
         backup = self.service.apply_boot_plan(plan, confirmed=True)
         self.assertEqual(Path(backup).read_text(), original)
         self.assertIn('user_overlays=custom-any-name  another-name  \n', path.read_text())
-        self.assertIn('overlays=i2c1\n', path.read_text())
+        self.assertIn('overlays=\n', path.read_text())
+
+    def test_usb2_host_alias_and_missing_file_before_apply(self):
+        path = self.env('overlay_prefix=napi-rk3308\noverlays=\nuser_overlays=custom\n')
+        cfg = BoardConfig(enabled={'usb_host'})
+        self.files('napi-rk3308-usb2-host')
+        plan = self.service.boot_plan(cfg)
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=usb2-host')
+        self.assertEqual(plan['warnings'], [])
+        (self.stock / 'napi-rk3308-usb2-host.dtbo').unlink()
+        with self.assertRaisesRegex(ValueError, 'files changed since preview'):
+            self.service.apply_boot_plan(plan, confirmed=True)
+        self.assertEqual(path.read_text(), plan['before'])
+        plan = self.service.boot_plan(cfg)
+        self.assertEqual(plan['proposed_overlay_string'], 'overlays=')
+        self.assertIn('not added to overlays=', plan['warnings'][0])
+        self.assertIn('usb_host', cfg.enabled)
+        self.assertEqual(plan['proposed_user_overlay_string'], 'user_overlays=custom')
+
+    def test_boot_write_offers_separate_reboot_only_after_success(self):
+        from unittest.mock import patch
+        path = self.env('overlay_prefix=rk3308\noverlays=\n')
+        self.files('rk3308-i2c1')
+        self.service.reboot = Mock()
+        for reboot in (False, True):
+            path.write_text('overlay_prefix=rk3308\noverlays=\n')
+            ui = UI(Mock(), self.service)
+            ui.cfg = BoardConfig(enabled={'i2c1'})
+            ui.view_comparison = Mock(return_value=True)
+            ui.confirm_yes = Mock(side_effect=[True, reboot])
+            self.service.reboot.reset_mock()
+            ui.write_env()
+            self.assertEqual(ui.confirm_yes.call_count, 2)
+            self.assertIn('Reboot now?', ui.confirm_yes.call_args.args[0])
+            self.assertIn('overlays=i2c1', path.read_text())
+            self.assertEqual(self.service.reboot.call_count, int(reboot))
+        ui.confirm_yes = Mock(return_value=True)
+        ui.write_env()
+        ui.confirm_yes.assert_not_called()
+        path.write_text('overlay_prefix=rk3308\noverlays=\n')
+        self.service.reboot.reset_mock()
+        ui.confirm_yes = Mock(return_value=True)
+        with patch.object(self.service, 'apply_boot_plan', side_effect=OSError('read-back mismatch')), patch('curses.beep'):
+            ui.write_env()
+        self.assertEqual(ui.confirm_yes.call_count, 1)
+        self.service.reboot.assert_not_called()
 
     def test_tui_view_only_and_confirmation_cancellation(self):
         self.env('overlay_prefix=rk3308\n')
@@ -289,4 +334,5 @@ class BootTests(unittest.TestCase):
         ui.view_text = Mock()
         self.assertIn('disabled', ui.action_label('read'))
         self.assertFalse(ui.activate())
-        self.assertIn('EEPROM unavailable / not configured', ui.view_text.call_args.args[0])
+        ui.view_text.assert_not_called()
+        self.assertIn('EEPROM unavailable / not configured', ui.status)
